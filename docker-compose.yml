@@ -1,0 +1,36 @@
+version: '3.3'
+
+networks:
+  net:
+
+services:
+    microservice-jitsi-log-view:
+        networks:
+         - net
+        build:
+            context: .
+        image: microservice-jitsi-log-view:1.0
+        environment:
+          - URI_MONGODB=mongodb://mongo:27017/
+          - DATABASE=jitsilog
+          - COLLECTION=logs
+        ports:
+            - "8080:8080"
+        deploy:
+          restart_policy:
+            condition: on-failure
+        depends_on:
+            - mongo
+
+    mongo:
+        networks:
+         - net
+        image: mongo:4.2-bionic
+        deploy:
+            restart_policy:
+                condition: always
+        ports:
+            - "27017:27017"
+
+
+
