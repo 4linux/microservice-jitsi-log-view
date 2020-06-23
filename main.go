@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"context"
 	"encoding/json"
@@ -10,17 +9,16 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
+	"strconv"
+	//"go.mongodb.org/mongo-driver/mongo/readpref"
 	"net/http"
 	"os"
 	"time"
 )
 
-
 var URI_MONGODB string
 var DATABASE string
 var COLLECTION string
-
 
 type Jitsilog struct {
 	Sala       string `json:"sala"`
@@ -32,7 +30,6 @@ type Jitsilog struct {
 	Timestramp int    `json:"timestamp"`
 	Action     string `json:"action"`
 }
-
 
 func init() {
 	log.SetFormatter(&log.JSONFormatter{})
@@ -56,40 +53,43 @@ func init() {
 	}
 	log.Debug("microservice-jitsi-log-view init")
 	log.WithFields(log.Fields{
-		"URI": URI_MONGODB,
-		"DATABASE": DATABASE,
+		"URI":        URI_MONGODB,
+		"DATABASE":   DATABASE,
 		"COLLECTION": COLLECTION}).Info("Database Connection Info")
 }
 
-
 func GetClient() *mongo.Client {
-	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(URI_MONGODB))
+	context, _ := context.WithTimeout(context.Background(), 10*time.Second)
+	client, err := mongo.Connect(context, options.Client().ApplyURI(URI_MONGODB))
 	if err != nil {
-		log.Fatal("Failed to create the client ",err)
+		log.Fatal("Failed to create the client ", err)
 	}
 	return client
 }
 
-
-func getLogs(size string, filter bson.M) []*Jitsilog {
+func findLogs(size string, filter bson.M, sort bool) []*Jitsilog {
 	client := GetClient()
-	err := client.Ping(context.Background(), readpref.Primary())
-	if err != nil {
-		log.Fatal("Failed to connect to database!", err)
-	} else {
-		log.Info("Connected!")
+	optFind := options.Find()
+	if size != "0" {
+		sizeInt, err := strconv.ParseInt(size, 10, 64)
+		if err != nil {
+			log.Fatal("Failed to convert size to int ", err)
+		}
+		optFind.SetLimit(sizeInt)
+		log.Info("Dataset row limit ", sizeInt)
 	}
-	log.Info("Dataset row limit ", size)
+	if sort == true {
+		optFind.SetSort(bson.D{{"timestamp", -1}})
+	}
 	var jitsilogs []*Jitsilog
 	collection := client.Database(DATABASE).Collection(COLLECTION)
-	cur, err := collection.Find(context.TODO(), filter)
+	cursor, err := collection.Find(context.TODO(), filter, optFind)
 	if err != nil {
 		log.Fatal("Error on finding the documents ", err)
 	}
-	for cur.Next(context.TODO()) {
+	for cursor.Next(context.TODO()) {
 		var jitsilog Jitsilog
-		err = cur.Decode(&jitsilog)
+		err = cursor.Decode(&jitsilog)
 		if err != nil {
 			log.Fatal("Error on decoding the document ", err)
 		}
@@ -97,7 +97,42 @@ func getLogs(size string, filter bson.M) []*Jitsilog {
 	}
 	err = client.Disconnect(context.TODO())
 	if err != nil {
-		log.Fatal("Failed to disconnect from database!",err)
+		log.Fatal("Failed to disconnect from database!", err)
+	}
+	log.Info("Connection to MongoDB closed.")
+	return jitsilogs
+}
+
+func aggLogs(size string, filter bson.M) []*Jitsilog {
+	client := GetClient()
+	optAggregate := options.Aggregate().SetMaxTime(2 * time.Second)
+	sizeInt, err := strconv.ParseInt(size, 10, 64)
+	if err != nil {
+		log.Fatal("Failed to convert size to int ", err)
+	}
+	if size != "0" {
+		log.Info("Dataset row limit ", sizeInt)
+	}
+
+	var jitsilogs []*Jitsilog
+	collection := client.Database(DATABASE).Collection(COLLECTION)
+	matchStage := bson.D{{"$match", bson.D{{"email", "guilherme@domain.tld"}}}}
+
+	cursor, err := collection.Aggregate(context.TODO(), mongo.Pipeline{matchStage}, optAggregate)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for cursor.Next(context.TODO()) {
+		var jitsilog Jitsilog
+		err = cursor.Decode(&jitsilog)
+		if err != nil {
+			log.Fatal("Error on decoding the document ", err)
+		}
+		jitsilogs = append(jitsilogs, &jitsilog)
+	}
+	err = client.Disconnect(context.TODO())
+	if err != nil {
+		log.Fatal("Failed to disconnect from database!", err)
 	}
 	log.Info("Connection to MongoDB closed.")
 	return jitsilogs
@@ -118,7 +153,7 @@ func checkHealth(w http.ResponseWriter, r *http.Request) {
 func latestLogs(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	var jitsilogs []*Jitsilog
-	jitsilogs = getLogs(queryParams["last"][0],bson.M{})
+	jitsilogs = findLogs(queryParams["last"][0], bson.M{}, true)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(jitsilogs)
@@ -146,9 +181,13 @@ func searchLesson(w http.ResponseWriter, r *http.Request) {
 func searchStudentEmail(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	fmt.Fprintf(w, "Student %s", queryParams["studentEmail"][0])
+	var jitsilogs []*Jitsilog
+	jitsilogs = aggLogs("0", bson.M{})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(jitsilogs)
 	// Trazer todos os registros do aluno@domain.tld
 }
-
 
 func main() {
 	router := mux.NewRouter()
@@ -166,5 +205,8 @@ func main() {
 	// TODO regex for email
 	// TODO unix timestamp to datetime
 	// TODO ToString from MongoDB
-	// TODO Set sort and limit
+	// TODO Select only a few fields
+	// TODO Unit Tests
+	// TODO Summary with presence time (Diff between login/logout)
+	// db.logs.aggregate({"$match": {"email":"bryan@domain.tld"}}, {"$limit": 1}, {"$sort": {"timestamp": -1}})
 }
