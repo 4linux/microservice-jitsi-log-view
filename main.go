@@ -104,7 +104,7 @@ func findLogs(size string) []*Jitsilog {
 	}
 	err = client.Disconnect(context.TODO())
 	if err != nil {
-		log.Fatal("Failed to disconnect from database!", err)
+		log.Fatal("Failed to disconnect from database! ", err)
 	}
 	log.Debug("Connection to MongoDB closed.")
 	return jitsilogs
@@ -114,13 +114,6 @@ func findLogs(size string) []*Jitsilog {
 func aggLogs(size string, filter bson.D) []*Jitsilog {
 	client := getClient()
 	optAggregate := options.Aggregate().SetMaxTime(2 * time.Second)
-	sizeInt, err := strconv.ParseInt(size, 10, 64)
-	if err != nil {
-		log.Fatal("Failed to convert size to int ", err)
-	}
-	if size != "0" {
-		log.Info("Dataset row limit ", sizeInt)
-	}
 	var jitsilogs []*Jitsilog
 	collection := client.Database(DATABASE).Collection(COLLECTION)
 	matchStage := bson.D{{"$match", filter}}
@@ -165,7 +158,6 @@ func latestLogs(w http.ResponseWriter, r *http.Request) {
 	var jitsilogs []*Jitsilog
 	jitsilogs = findLogs(queryParams["last"][0])
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(jitsilogs)
 }
 
@@ -175,8 +167,7 @@ func searchCourse(w http.ResponseWriter, r *http.Request) {
 	var filter bson.D = bson.D{{"curso", queryParams["courseid"][0]}}
 	var jitsilogs []*Jitsilog
 	jitsilogs = aggLogs("0", filter)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")	
 	json.NewEncoder(w).Encode(jitsilogs)
 }
 
@@ -187,7 +178,6 @@ func searchClass(w http.ResponseWriter, r *http.Request) {
 	var jitsilogs []*Jitsilog
 	jitsilogs = aggLogs("0", filter)
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(jitsilogs)
 	// Trazer todos os registros de aulas da turma X
 }
@@ -199,7 +189,6 @@ func searchRoom(w http.ResponseWriter, r *http.Request) {
 	var jitsilogs []*Jitsilog
 	jitsilogs = aggLogs("0", filter)
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(jitsilogs)
 }
 
@@ -210,7 +199,6 @@ func searchStudent(w http.ResponseWriter, r *http.Request) {
 	var jitsilogs []*Jitsilog
 	jitsilogs = aggLogs("0", filter)
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(jitsilogs)
 }
 
@@ -234,6 +222,7 @@ func main() {
 	// TODO Unit Tests
 	// TODO Summary with presence time (Diff between login/logout)
 	// TODO REFATOR IT ASAP ASAP ASAP
+	// TODO Log "err" in a specifc object
 	// No modal for now, direct text search
 	// db.logs.aggregate({"$match": {"email":"bryan@domain.tld"}}, {"$limit": 1}, {"$sort": {"timestamp": -1}})
 }
