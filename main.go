@@ -223,6 +223,8 @@ func main() {
 	// TODO Summary with presence time (Diff between login/logout)
 	// TODO REFATOR IT ASAP ASAP ASAP
 	// TODO Log "err" in a specifc object
+	// TODO Sort on find
+	// TODO Add w at find functions
 	// No modal for now, direct text search
 	// db.logs.aggregate({"$match": {"email":"bryan@domain.tld"}}, {"$limit": 1}, {"$sort": {"timestamp": -1}})
 }
