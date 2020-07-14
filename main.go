@@ -110,6 +110,50 @@ func findLogs(size string) []*Jitsilog {
 	return jitsilogs
 }
 
+// Find logs without filter and ordered by decrescent timestamp, can limit dataset.
+func datasetElementCount(size string, filter bson.D) []*Jitsilog {
+	return nil
+}
+
+// Find logs without filter and ordered by decrescent timestamp, can limit dataset.
+func findLogsFilter(size string, filter bson.D) []*Jitsilog {
+	client := getClient()
+	optFind := options.Find()
+	if size != "0" {
+		sizeInt, err := strconv.ParseInt(size, 10, 64)
+		if err != nil {
+			log.Fatal("Failed to convert size to int ", err)
+		}
+		optFind.SetLimit(sizeInt)
+		log.Info("Dataset row limit ", sizeInt)
+	}
+	optFind.SetSkip(1)
+	optFind.SetLimit(1)
+	optFind.SetSort(bson.D{{"timestamp", -1}}) // Organiza com a timestamp mais recente
+	var jitsilogs []*Jitsilog
+	collection := client.Database(DATABASE).Collection(COLLECTION)
+	cursor, err := collection.Find(context.TODO(), filter, optFind)
+	// Count here
+	if err != nil {
+		log.Fatal("Error on finding the documents ", err)
+	}
+	log.Debug("Connection to MongoDB opened.")
+	for cursor.Next(context.TODO()) {
+		var jitsilog Jitsilog
+		err = cursor.Decode(&jitsilog)
+		if err != nil {
+			log.Fatal("Error on decoding the document ", err)
+		}
+		jitsilogs = append(jitsilogs, &jitsilog)
+	}
+	err = client.Disconnect(context.TODO())
+	if err != nil {
+		log.Fatal("Failed to disconnect from database! ", err)
+	}
+	log.Debug("Connection to MongoDB closed.")
+	return jitsilogs
+}
+
 // Search function with custom filters, can limit dataset.
 func aggLogs(size string, filter bson.D) []*Jitsilog {
 	client := getClient()
@@ -161,20 +205,30 @@ func latestLogs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(jitsilogs)
 }
 
+// Query the latest logs with a variable dataset size based on the URL.
+func betaLogs(w http.ResponseWriter, r *http.Request) {
+	queryParams := r.URL.Query()
+	var jitsilogs []*Jitsilog
+	filter := bson.D{{"curso", queryParams["curso"][0]}}
+	jitsilogs = findLogsFilter("0",filter)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(jitsilogs)
+}
+
 // Query all logs that correspond with desired courseid.
 func searchCourse(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
-	var filter bson.D = bson.D{{"curso", queryParams["courseid"][0]}}
+	filter := bson.D{{"curso", queryParams["courseid"][0]}}
 	var jitsilogs []*Jitsilog
 	jitsilogs = aggLogs("0", filter)
-	w.Header().Set("Content-Type", "application/json")	
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
 }
 
 // Query all logs that correspond with desired classid
 func searchClass(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
-	var filter bson.D = bson.D{{"turma", queryParams["classid"][0]}}
+	filter := bson.D{{"turma", queryParams["classid"][0]}}
 	var jitsilogs []*Jitsilog
 	jitsilogs = aggLogs("0", filter)
 	w.Header().Set("Content-Type", "application/json")
@@ -185,7 +239,7 @@ func searchClass(w http.ResponseWriter, r *http.Request) {
 // Query all logs that correspond with desired roomid
 func searchRoom(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
-	var filter bson.D = bson.D{{"sala", queryParams["roomid"][0]}}
+	filter := bson.D{{"sala", queryParams["roomid"][0]}}
 	var jitsilogs []*Jitsilog
 	jitsilogs = aggLogs("0", filter)
 	w.Header().Set("Content-Type", "application/json")
@@ -195,7 +249,7 @@ func searchRoom(w http.ResponseWriter, r *http.Request) {
 // Query all logs that correspond with desired student email
 func searchStudent(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
-	var filter bson.D = bson.D{{"email", queryParams["studentEmail"][0]}}
+	filter := bson.D{{"email", queryParams["studentEmail"][0]}}
 	var jitsilogs []*Jitsilog
 	jitsilogs = aggLogs("0", filter)
 	w.Header().Set("Content-Type", "application/json")
@@ -212,12 +266,15 @@ func main() {
 	api.HandleFunc("/logs", searchClass).Methods("GET").Queries("classid", "{classid}")
 	api.HandleFunc("/logs", searchStudent).Methods("GET").Queries("studentEmail", "{studentEmail}")
 	api.HandleFunc("/logs", searchRoom).Methods("GET").Queries("roomid", "{roomid}")
+	api.HandleFunc("/logs", betaLogs).Methods("GET").Queries("beta", "{beta}")
 	http.Handle("/", router)
 	log.Fatal(http.ListenAndServe(":8080", nil))
+	// TODO Change from aggregation to find with bson.D query
+	// TODO Error handling for size bigger than dataset
 	// TODO Log requests
-	// TODO regex for email
-	// TODO unix timestamp to datetime
-	// TODO ToString from MongoDB
+	// TODO regex for email validator
+	// TODO unix timestamp to datetime (change lua to send ISO 8601)
+	// TODO ToString from MongoDB in case of data with divergent type
 	// TODO Select only a few fields
 	// TODO Unit Tests
 	// TODO Summary with presence time (Diff between login/logout)
@@ -225,6 +282,7 @@ func main() {
 	// TODO Log "err" in a specifc object
 	// TODO Sort on find
 	// TODO Add w at find functions
+	// TODO Accept wildcard in search
 	// No modal for now, direct text search
 	// db.logs.aggregate({"$match": {"email":"bryan@domain.tld"}}, {"$limit": 1}, {"$sort": {"timestamp": -1}})
 }
@@ -240,3 +298,12 @@ func main() {
 // Course
 // Class
 // Lesson (Room)
+
+// Paginacao
+// Com base na chamada de consulta, calcular o tamanho do dataset e dividir pelo size,
+// gerando assim o numero de paginas.
+// Considerando um numero de elementos de 20, calcular o skip, a paginacao vai ter como base um offset no
+// MongoDB, cada consulta vai retornar a pagina atual, multiplicando pelo numero de elementos e
+// na ordem certa (sort) faz o proximo retorno pular os elementos vistos anteriormente.
+// A primeira pagina nao pode ser pulada, logo o skip teria que ser calculado com
+// skip = size * ( pagina - 1)
