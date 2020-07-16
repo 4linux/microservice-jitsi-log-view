@@ -40,7 +40,11 @@ type Jitsilog struct {
 func init() {
 	log.SetFormatter(&log.JSONFormatter{})
 	log.SetOutput(os.Stdout)
-	log.SetLevel(log.InfoLevel)
+	if len(os.Getenv("DEBUG")) > 0 {
+		log.SetLevel(log.DebugLevel)
+	} else {
+		log.SetLevel(log.InfoLevel)
+	}
 	log.SetReportCaller(true)
 	if len(os.Getenv("URI_MONGODB")) > 0 {
 		URI_MONGODB = os.Getenv("URI_MONGODB")
@@ -110,12 +114,33 @@ func findLogs(size string) []*Jitsilog {
 	return jitsilogs
 }
 
-// Find logs without filter and ordered by decrescent timestamp, can limit dataset.
-func datasetElementCount(size string, filter bson.D) []*Jitsilog {
-	return nil
+// Calculate dataset elements based on query
+func datasetElementCount(size string, filter bson.D) int64 {
+	client := getClient()
+	sizeInt, err := strconv.ParseInt(size, 10, 64)
+	if err != nil {
+		log.Fatal("Failed to convert size to int ", err)
+	}
+	log.Info("Dataset row limit ", sizeInt)
+	collection := client.Database(DATABASE).Collection(COLLECTION)
+	count, err := collection.CountDocuments(context.TODO(), filter)
+	log.Debug("Connection to MongoDB opened.")
+	if err != nil {
+		log.Fatal("Error on count of the documents ", err)
+	}
+	err = client.Disconnect(context.TODO())
+	if err != nil {
+		log.Fatal("Failed to disconnect from database! ", err)
+	}
+	log.Debug("Connection to MongoDB closed.")
+	if count < size {
+		return 1
+	} else {
+		return count / size
+	}
 }
 
-// Find logs without filter and ordered by decrescent timestamp, can limit dataset.
+// Find logs with filter and ordered by decrescent timestamp, can limit dataset.
 func findLogsFilter(size string, filter bson.D) []*Jitsilog {
 	client := getClient()
 	optFind := options.Find()
@@ -197,7 +222,7 @@ func checkHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // Query the latest logs with a variable dataset size based on the URL.
-func latestLogs(w http.ResponseWriter, r *http.Request) {
+func latestLogsHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	var jitsilogs []*Jitsilog
 	jitsilogs = findLogs(queryParams["last"][0])
@@ -206,7 +231,7 @@ func latestLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 // Query the latest logs with a variable dataset size based on the URL.
-func betaLogs(w http.ResponseWriter, r *http.Request) {
+func betaLogsHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	var jitsilogs []*Jitsilog
 	filter := bson.D{{"curso", queryParams["curso"][0]}}
@@ -215,8 +240,17 @@ func betaLogs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(jitsilogs)
 }
 
+// Query the count of docs with filter.
+func countLogsHandler(w http.ResponseWriter, r *http.Request) {
+	queryParams := r.URL.Query()
+	filter := bson.D{{"curso", queryParams["curso"][0]}}
+	count := datasetElementCount("20", filter)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(count)
+}
+
 // Query all logs that correspond with desired courseid.
-func searchCourse(w http.ResponseWriter, r *http.Request) {
+func searchCourseHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{"curso", queryParams["courseid"][0]}}
 	var jitsilogs []*Jitsilog
@@ -226,7 +260,7 @@ func searchCourse(w http.ResponseWriter, r *http.Request) {
 }
 
 // Query all logs that correspond with desired classid
-func searchClass(w http.ResponseWriter, r *http.Request) {
+func searchClassHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{"turma", queryParams["classid"][0]}}
 	var jitsilogs []*Jitsilog
@@ -237,7 +271,7 @@ func searchClass(w http.ResponseWriter, r *http.Request) {
 }
 
 // Query all logs that correspond with desired roomid
-func searchRoom(w http.ResponseWriter, r *http.Request) {
+func searchRoomHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{"sala", queryParams["roomid"][0]}}
 	var jitsilogs []*Jitsilog
@@ -247,7 +281,7 @@ func searchRoom(w http.ResponseWriter, r *http.Request) {
 }
 
 // Query all logs that correspond with desired student email
-func searchStudent(w http.ResponseWriter, r *http.Request) {
+func searchStudentHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{"email", queryParams["studentEmail"][0]}}
 	var jitsilogs []*Jitsilog
@@ -261,14 +295,16 @@ func main() {
 	router.HandleFunc("/", defaultHandler).Methods(http.MethodGet)
 	router.HandleFunc("/healthcheck", checkHealth).Methods(http.MethodGet)
 	api := router.PathPrefix("/v1").Subrouter()
-	api.HandleFunc("/logs", latestLogs).Methods("GET").Queries("last", "{last:[0-9]+}")
-	api.HandleFunc("/logs", searchCourse).Methods("GET").Queries("courseid", "{courseid}")
-	api.HandleFunc("/logs", searchClass).Methods("GET").Queries("classid", "{classid}")
-	api.HandleFunc("/logs", searchStudent).Methods("GET").Queries("studentEmail", "{studentEmail}")
-	api.HandleFunc("/logs", searchRoom).Methods("GET").Queries("roomid", "{roomid}")
-	api.HandleFunc("/logs", betaLogs).Methods("GET").Queries("beta", "{beta}")
+	api.HandleFunc("/logs", latestLogsHandler).Methods("GET").Queries("last", "{last:[0-9]+}")
+	api.HandleFunc("/logs", searchCourseHandler).Methods("GET").Queries("courseid", "{courseid}")
+	api.HandleFunc("/logs", searchClassHandler).Methods("GET").Queries("classid", "{classid}")
+	api.HandleFunc("/logs", searchStudentHandler).Methods("GET").Queries("studentEmail", "{studentEmail}")
+	api.HandleFunc("/logs", searchRoomHandler).Methods("GET").Queries("roomid", "{roomid}")
+	api.HandleFunc("/logs", betaLogsHandler).Methods("GET").Queries("beta", "{beta}")
+	api.HandleFunc("/logs", countLogsHandler).Methods("GET").Queries("count", "{count}")
 	http.Handle("/", router)
 	log.Fatal(http.ListenAndServe(":8080", nil))
+	// TODO Treat possible invalid or null query params
 	// TODO Change from aggregation to find with bson.D query
 	// TODO Error handling for size bigger than dataset
 	// TODO Log requests
