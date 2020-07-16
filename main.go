@@ -79,17 +79,21 @@ func getClient() *mongo.Client {
 }
 
 // Find logs without filter and ordered by decrescent timestamp, can limit dataset.
-func findLogs(size string) []*Jitsilog {
+func findLogs(size string, skip string) []*Jitsilog {
 	client := getClient()
 	optFind := options.Find()
-	if size != "0" {
-		sizeInt, err := strconv.ParseInt(size, 10, 64)
-		if err != nil {
-			log.Fatal("Failed to convert size to int ", err)
-		}
-		optFind.SetLimit(sizeInt)
-		log.Info("Dataset row limit ", sizeInt)
+	sizeInt, err := strconv.ParseInt(size, 10, 64)
+	if err != nil {
+		log.Fatal("Failed to convert size to int ", err)
 	}
+	optFind.SetLimit(sizeInt)
+	log.Info("Dataset row limit ", sizeInt)
+	skipInt, err := strconv.ParseInt(skip, 10, 64)
+	if err != nil {
+		log.Fatal("Failed to convert skip to int ", err)
+	}
+	log.Info("Dataset row skip ", skipInt)
+	optFind.SetSkip(skipInt)
 	optFind.SetSort(bson.D{{"timestamp", -1}}) // Organiza com a timestamp mais recente
 	var jitsilogs []*Jitsilog
 	collection := client.Database(DATABASE).Collection(COLLECTION)
@@ -133,10 +137,10 @@ func datasetElementCount(size string, filter bson.D) int64 {
 		log.Fatal("Failed to disconnect from database! ", err)
 	}
 	log.Debug("Connection to MongoDB closed.")
-	if count < size {
+	if count < sizeInt {
 		return 1
 	} else {
-		return count / size
+		return count / sizeInt
 	}
 }
 
@@ -225,7 +229,7 @@ func checkHealth(w http.ResponseWriter, r *http.Request) {
 func latestLogsHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	var jitsilogs []*Jitsilog
-	jitsilogs = findLogs(queryParams["last"][0])
+	jitsilogs = findLogs(queryParams["size"][0], queryParams["skip"][0])
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
 }
@@ -235,7 +239,7 @@ func betaLogsHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	var jitsilogs []*Jitsilog
 	filter := bson.D{{"curso", queryParams["curso"][0]}}
-	jitsilogs = findLogsFilter("0",filter)
+	jitsilogs = findLogsFilter("0", filter)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
 }
@@ -304,6 +308,7 @@ func main() {
 	api.HandleFunc("/logs", countLogsHandler).Methods("GET").Queries("count", "{count}")
 	http.Handle("/", router)
 	log.Fatal(http.ListenAndServe(":8080", nil))
+	// TODO Convert queries in dedicated endpoints
 	// TODO Treat possible invalid or null query params
 	// TODO Change from aggregation to find with bson.D query
 	// TODO Error handling for size bigger than dataset
