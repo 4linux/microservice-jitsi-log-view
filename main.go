@@ -118,32 +118,6 @@ func findLogs(size string, skip string) []*Jitsilog {
 	return jitsilogs
 }
 
-// Calculate dataset elements based on query
-func datasetElementCount(size string, filter bson.D) int64 {
-	client := getClient()
-	sizeInt, err := strconv.ParseInt(size, 10, 64)
-	if err != nil {
-		log.Fatal("Failed to convert size to int ", err)
-	}
-	log.Info("Dataset row limit ", sizeInt)
-	collection := client.Database(DATABASE).Collection(COLLECTION)
-	count, err := collection.CountDocuments(context.TODO(), filter)
-	log.Debug("Connection to MongoDB opened.")
-	if err != nil {
-		log.Fatal("Error on count of the documents ", err)
-	}
-	err = client.Disconnect(context.TODO())
-	if err != nil {
-		log.Fatal("Failed to disconnect from database! ", err)
-	}
-	log.Debug("Connection to MongoDB closed.")
-	if count < sizeInt {
-		return 1
-	} else {
-		return count / sizeInt
-	}
-}
-
 // Find logs with filter and ordered by decrescent timestamp, can limit dataset.
 func findLogsFilter(size string, filter bson.D) []*Jitsilog {
 	client := getClient()
@@ -244,15 +218,6 @@ func betaLogsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(jitsilogs)
 }
 
-// Query the count of docs with filter.
-func countLogsHandler(w http.ResponseWriter, r *http.Request) {
-	queryParams := r.URL.Query()
-	filter := bson.D{{"curso", queryParams["curso"][0]}}
-	count := datasetElementCount("20", filter)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(count)
-}
-
 // Query all logs that correspond with desired courseid.
 func searchCourseHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
@@ -305,7 +270,6 @@ func main() {
 	api.HandleFunc("/logs", searchStudentHandler).Methods("GET").Queries("studentEmail", "{studentEmail}")
 	api.HandleFunc("/logs", searchRoomHandler).Methods("GET").Queries("roomid", "{roomid}")
 	api.HandleFunc("/logs", betaLogsHandler).Methods("GET").Queries("beta", "{beta}")
-	api.HandleFunc("/logs", countLogsHandler).Methods("GET").Queries("count", "{count}")
 	http.Handle("/", router)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 	// TODO Convert queries in dedicated endpoints
