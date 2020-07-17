@@ -147,7 +147,7 @@ func searchCourseHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{"curso", queryParams["courseid"][0]}}
 	var jitsilogs []*Jitsilog
-	jitsilogs = findLogsFilter("0", filter, "0")
+	jitsilogs = findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
 }
@@ -157,7 +157,7 @@ func searchClassHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{"turma", queryParams["classid"][0]}}
 	var jitsilogs []*Jitsilog
-	jitsilogs = findLogsFilter("0", filter, "0")
+	jitsilogs = findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
 }
@@ -167,7 +167,7 @@ func searchRoomHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{"sala", queryParams["roomid"][0]}}
 	var jitsilogs []*Jitsilog
-	jitsilogs = findLogsFilter("0", filter, "0")
+	jitsilogs = findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
 }
@@ -177,7 +177,7 @@ func searchStudentHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{"email", queryParams["studentEmail"][0]}}
 	var jitsilogs []*Jitsilog
-	jitsilogs = findLogsFilter("0", filter, "0")
+	jitsilogs = findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
 }
@@ -194,21 +194,4 @@ func main() {
 	api.HandleFunc("/logs", searchRoomHandler).Methods("GET").Queries("roomid", "{roomid}")
 	http.Handle("/", router)
 	log.Fatal(http.ListenAndServe(":8080", nil))
-	// TODO Convert queries in dedicated endpoints
-	// TODO Treat possible invalid or null query params
-	// TODO Change from aggregation to find with bson.D query
-	// TODO Error handling for size bigger than dataset
-	// TODO Log requests
-	// TODO regex for email validator
-	// TODO unix timestamp to datetime (change lua to send ISO 8601)
-	// TODO ToString from MongoDB in case of data with divergent type
-	// TODO Select only a few fields
-	// TODO Unit Tests
-	// TODO Summary with presence time (Diff between login/logout)
-	// TODO REFATOR IT ASAP ASAP ASAP
-	// TODO Log "err" in a specifc object
-	// TODO Add w at find functions
-	// TODO Accept wildcard in search
-	// No modal for now, direct text search
-	// db.logs.aggregate({"$match": {"email":"bryan@domain.tld"}}, {"$limit": 1}, {"$sort": {"timestamp": -1}})
 }
