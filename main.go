@@ -78,65 +78,27 @@ func getClient() *mongo.Client {
 	return client
 }
 
-// Find logs without filter and ordered by decrescent timestamp, can limit dataset.
-func findLogs(size string, skip string) []*Jitsilog {
+// Find logs with filter and ordered by decrescent timestamp, can limit & skip items in dataset.
+func findLogsFilter(size string, filter bson.D, skip string) []*Jitsilog {
 	client := getClient()
 	optFind := options.Find()
 	sizeInt, err := strconv.ParseInt(size, 10, 64)
 	if err != nil {
-		log.Fatal("Failed to convert size to int ", err)
+		log.Fatal("Failed to convert size argument to int ", err)
 	}
-	optFind.SetLimit(sizeInt)
-	log.Info("Dataset row limit ", sizeInt)
 	skipInt, err := strconv.ParseInt(skip, 10, 64)
 	if err != nil {
-		log.Fatal("Failed to convert skip to int ", err)
+		log.Fatal("Failed to convert skip argument to int ", err)
 	}
-	log.Info("Dataset row skip ", skipInt)
+	optFind.SetLimit(sizeInt)
+	log.Debug("Dataset row limit ", sizeInt)
+	log.Debug("Dataset row skip ", skipInt)
 	optFind.SetSkip(skipInt)
-	optFind.SetSort(bson.D{{"timestamp", -1}}) // Organiza com a timestamp mais recente
-	var jitsilogs []*Jitsilog
-	collection := client.Database(DATABASE).Collection(COLLECTION)
-	cursor, err := collection.Find(context.TODO(), bson.M{}, optFind)
-	if err != nil {
-		log.Fatal("Error on finding the documents ", err)
-	}
-	log.Debug("Connection to MongoDB opened.")
-	for cursor.Next(context.TODO()) {
-		var jitsilog Jitsilog
-		err = cursor.Decode(&jitsilog)
-		if err != nil {
-			log.Fatal("Error on decoding the document ", err)
-		}
-		jitsilogs = append(jitsilogs, &jitsilog)
-	}
-	err = client.Disconnect(context.TODO())
-	if err != nil {
-		log.Fatal("Failed to disconnect from database! ", err)
-	}
-	log.Debug("Connection to MongoDB closed.")
-	return jitsilogs
-}
-
-// Find logs with filter and ordered by decrescent timestamp, can limit dataset.
-func findLogsFilter(size string, filter bson.D) []*Jitsilog {
-	client := getClient()
-	optFind := options.Find()
-	if size != "0" {
-		sizeInt, err := strconv.ParseInt(size, 10, 64)
-		if err != nil {
-			log.Fatal("Failed to convert size to int ", err)
-		}
-		optFind.SetLimit(sizeInt)
-		log.Info("Dataset row limit ", sizeInt)
-	}
-	optFind.SetSkip(1)
-	optFind.SetLimit(1)
-	optFind.SetSort(bson.D{{"timestamp", -1}}) // Organiza com a timestamp mais recente
+	optFind.SetLimit(sizeInt)
+	optFind.SetSort(bson.D{{"timestamp", -1}})
 	var jitsilogs []*Jitsilog
 	collection := client.Database(DATABASE).Collection(COLLECTION)
 	cursor, err := collection.Find(context.TODO(), filter, optFind)
-	// Count here
 	if err != nil {
 		log.Fatal("Error on finding the documents ", err)
 	}
@@ -152,34 +114,6 @@ func findLogsFilter(size string, filter bson.D) []*Jitsilog {
 	err = client.Disconnect(context.TODO())
 	if err != nil {
 		log.Fatal("Failed to disconnect from database! ", err)
-	}
-	log.Debug("Connection to MongoDB closed.")
-	return jitsilogs
-}
-
-// Search function with custom filters, can limit dataset.
-func aggLogs(size string, filter bson.D) []*Jitsilog {
-	client := getClient()
-	optAggregate := options.Aggregate().SetMaxTime(2 * time.Second)
-	var jitsilogs []*Jitsilog
-	collection := client.Database(DATABASE).Collection(COLLECTION)
-	matchStage := bson.D{{"$match", filter}}
-	cursor, err := collection.Aggregate(context.TODO(), mongo.Pipeline{matchStage}, optAggregate)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Debug("Connection to MongoDB opened.")
-	for cursor.Next(context.TODO()) {
-		var jitsilog Jitsilog
-		err = cursor.Decode(&jitsilog)
-		if err != nil {
-			log.Fatal("Error on decoding the document ", err)
-		}
-		jitsilogs = append(jitsilogs, &jitsilog)
-	}
-	err = client.Disconnect(context.TODO())
-	if err != nil {
-		log.Fatal("Failed to disconnect from database!", err)
 	}
 	log.Debug("Connection to MongoDB closed.")
 	return jitsilogs
@@ -203,17 +137,7 @@ func checkHealth(w http.ResponseWriter, r *http.Request) {
 func latestLogsHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	var jitsilogs []*Jitsilog
-	jitsilogs = findLogs(queryParams["size"][0], queryParams["skip"][0])
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(jitsilogs)
-}
-
-// Query the latest logs with a variable dataset size based on the URL.
-func betaLogsHandler(w http.ResponseWriter, r *http.Request) {
-	queryParams := r.URL.Query()
-	var jitsilogs []*Jitsilog
-	filter := bson.D{{"curso", queryParams["curso"][0]}}
-	jitsilogs = findLogsFilter("0", filter)
+	jitsilogs = findLogsFilter(queryParams["size"][0], bson.D{}, queryParams["skip"][0])
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
 }
@@ -223,7 +147,7 @@ func searchCourseHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{"curso", queryParams["courseid"][0]}}
 	var jitsilogs []*Jitsilog
-	jitsilogs = aggLogs("0", filter)
+	jitsilogs = findLogsFilter("0", filter, "0")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
 }
@@ -233,10 +157,9 @@ func searchClassHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{"turma", queryParams["classid"][0]}}
 	var jitsilogs []*Jitsilog
-	jitsilogs = aggLogs("0", filter)
+	jitsilogs = findLogsFilter("0", filter, "0")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
-	// Trazer todos os registros de aulas da turma X
 }
 
 // Query all logs that correspond with desired roomid
@@ -244,7 +167,7 @@ func searchRoomHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{"sala", queryParams["roomid"][0]}}
 	var jitsilogs []*Jitsilog
-	jitsilogs = aggLogs("0", filter)
+	jitsilogs = findLogsFilter("0", filter, "0")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
 }
@@ -254,7 +177,7 @@ func searchStudentHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{"email", queryParams["studentEmail"][0]}}
 	var jitsilogs []*Jitsilog
-	jitsilogs = aggLogs("0", filter)
+	jitsilogs = findLogsFilter("0", filter, "0")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
 }
@@ -269,7 +192,6 @@ func main() {
 	api.HandleFunc("/logs", searchClassHandler).Methods("GET").Queries("classid", "{classid}")
 	api.HandleFunc("/logs", searchStudentHandler).Methods("GET").Queries("studentEmail", "{studentEmail}")
 	api.HandleFunc("/logs", searchRoomHandler).Methods("GET").Queries("roomid", "{roomid}")
-	api.HandleFunc("/logs", betaLogsHandler).Methods("GET").Queries("beta", "{beta}")
 	http.Handle("/", router)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 	// TODO Convert queries in dedicated endpoints
@@ -285,30 +207,8 @@ func main() {
 	// TODO Summary with presence time (Diff between login/logout)
 	// TODO REFATOR IT ASAP ASAP ASAP
 	// TODO Log "err" in a specifc object
-	// TODO Sort on find
 	// TODO Add w at find functions
 	// TODO Accept wildcard in search
 	// No modal for now, direct text search
 	// db.logs.aggregate({"$match": {"email":"bryan@domain.tld"}}, {"$limit": 1}, {"$sort": {"timestamp": -1}})
 }
-
-// Checklist
-// Get recent logs - OK
-// Search by Student (email) - OK
-// Search by Class - OK
-// Search by Lesson - OK
-// Search by Course - OK
-
-// Hierarchy
-// Course
-// Class
-// Lesson (Room)
-
-// Paginacao
-// Com base na chamada de consulta, calcular o tamanho do dataset e dividir pelo size,
-// gerando assim o numero de paginas.
-// Considerando um numero de elementos de 20, calcular o skip, a paginacao vai ter como base um offset no
-// MongoDB, cada consulta vai retornar a pagina atual, multiplicando pelo numero de elementos e
-// na ordem certa (sort) faz o proximo retorno pular os elementos vistos anteriormente.
-// A primeira pagina nao pode ser pulada, logo o skip teria que ser calculado com
-// skip = size * ( pagina - 1)
