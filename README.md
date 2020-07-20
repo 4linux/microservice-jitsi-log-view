@@ -4,21 +4,19 @@ Microservice para visualizacao do logging de eventos de login e logout do Jitsi.
 
 ## TODOs
 
-- [ ] Change fatal to log and return error to client too
-- [ ] Listen in variable port
-- [ ] Convert queries in dedicated endpoints
-- [ ] Treat possible invalid or null query params
+- [ ] return error to client
+- [ ] return error if search doesnt bring any results
+- [ ] Treat possible invalid or null query params (maybe a parser function)
 - [ ] Error handling for size of the dataset
-- [ ] Log requests
-- [ ] regex for email validator (search about attacks based on input injection)
-- [ ] ToString from MongoDB in case of data with divergent type
-- [ ] Select only a few fields
+- [ ] Accept wildcard in search
+- [ ] Add w at find functions (find functions respond request directly)
 - [ ] Unit Tests
 - [ ] search about CORS
 - [ ] Summary with presence time (Diff between login/logout)
-- [ ] Log "err" in a log specifc field
-- [ ] Add w at find functions
-- [ ] Accept wildcard in search
+- [ ] Log requests
+- [ ] regex for email validator (search about attacks based on input injection)
+- [ ] Convert to string from MongoDB in case of data with divergent type
+- [ ] Select only a few fields
 - [ ] REFACT IT
 
 ## Agradecimentos
