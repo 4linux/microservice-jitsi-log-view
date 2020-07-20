@@ -4,6 +4,8 @@ Microservice para visualizacao do logging de eventos de login e logout do Jitsi.
 
 ## TODOs
 
+- [ ] Change fatal to log and return error to client too
+- [ ] Listen in variable port
 - [ ] Convert queries in dedicated endpoints
 - [ ] Treat possible invalid or null query params
 - [ ] Error handling for size of the dataset
