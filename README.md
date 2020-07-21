@@ -4,11 +4,11 @@ Microservice para visualizacao do logging de eventos de login e logout do Jitsi.
 
 ## TODOs
 
+- [ ] Accept wildcard in search
 - [ ] return error to client
 - [ ] return error if search doesnt bring any results
-- [ ] Treat possible invalid or null query params (maybe a parser function)
 - [ ] Error handling for size of the dataset
-- [ ] Accept wildcard in search
+- [ ] Treat possible invalid or null query params (maybe a parser function)
 - [ ] Add w at find functions (find functions respond request directly)
 - [ ] Unit Tests
 - [ ] search about CORS
