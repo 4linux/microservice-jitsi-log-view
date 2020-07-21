@@ -91,7 +91,7 @@ func getClient() *mongo.Client {
 }
 
 // Find logs with filter and ordered by decrescent timestamp, can limit & skip items in dataset.
-func findLogsFilter(size string, filter bson.D, skip string) (error, []*Jitsilog) {
+func findLogsFilter(size string, filter bson.M, skip string) (error, []*Jitsilog) {
 	client := getClient()
 	optFind := options.Find()
 	var jitsilogs []*Jitsilog
@@ -112,11 +112,28 @@ func findLogsFilter(size string, filter bson.D, skip string) (error, []*Jitsilog
 	}
 	log.Debug("Dataset row limit ", sizeInt)
 	log.Debug("Dataset row skip ", skipInt)
+
+	// Count before search then do the math with size and skip args to counter index out of range
+	collection := client.Database(DATABASE).Collection(COLLECTION)
+	count, err := collection.CountDocuments(context.TODO(), filter)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"error": err}).Info("Error on count of the documents")
+		logerror = err
+		return logerror, nil
+	}
+	if skipInt > count {
+		skipInt = count
+	} else if skipInt < 0 {
+		skipInt = 0
+	}
+	if sizeInt < 0 {
+		sizeInt = 20
+	}
+	log.Info("Elements: ", count)
 	optFind.SetSkip(skipInt)
 	optFind.SetLimit(sizeInt)
 	optFind.SetSort(bson.D{{"timestamp", -1}})
-	// Count before search then do the math with size and skip args to counter index out of range
-	collection := client.Database(DATABASE).Collection(COLLECTION)
 	cursor, err := collection.Find(context.TODO(), filter, optFind)
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -163,7 +180,7 @@ func checkHealth(w http.ResponseWriter, r *http.Request) {
 // Query the latest logs with a variable dataset size based on the URL.
 func latestLogsHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
-	err, jitsilogs := findLogsFilter(queryParams["size"][0], bson.D{}, queryParams["skip"][0])
+	err, jitsilogs := findLogsFilter(queryParams["size"][0], bson.M{}, queryParams["skip"][0])
 	if err != nil {
 		log.Info(err)
 	}
@@ -174,7 +191,7 @@ func latestLogsHandler(w http.ResponseWriter, r *http.Request) {
 // Query all logs that correspond with desired courseid.
 func searchCourseHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
-	filter := bson.D{{"curso", queryParams["id"][0]}}
+	filter := bson.M{"curso": queryParams["id"][0]}
 	err, jitsilogs := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	if err != nil {
 		log.Info(err)
@@ -186,7 +203,7 @@ func searchCourseHandler(w http.ResponseWriter, r *http.Request) {
 // Query all logs that correspond with desired classid
 func searchClassHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
-	filter := bson.D{{"turma", queryParams["id"][0]}}
+	filter := bson.M{"turma": queryParams["id"][0]}
 	err, jitsilogs := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	if err != nil {
 		log.Info(err)
@@ -198,7 +215,7 @@ func searchClassHandler(w http.ResponseWriter, r *http.Request) {
 // Query all logs that correspond with desired roomid
 func searchRoomHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
-	filter := bson.D{{"sala", queryParams["id"][0]}}
+	filter := bson.M{"sala": queryParams["id"][0]}
 	err, jitsilogs := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	if err != nil {
 		log.Info(err)
@@ -210,7 +227,7 @@ func searchRoomHandler(w http.ResponseWriter, r *http.Request) {
 // Query all logs that correspond with desired student email
 func searchStudentHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
-	filter := bson.D{{"email", queryParams["email"][0]}}
+	filter := bson.M{"email": queryParams["email"][0]}
 	err, jitsilogs := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	if err != nil {
 		log.Info(err)
