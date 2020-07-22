@@ -4,6 +4,7 @@ Microservice para visualizacao do logging de eventos de login e logout do Jitsi.
 
 ## TODOs
 
+- [ ] Format data
 - [ ] return error to client when something goes wrong instead of 200, nil
 - [ ] return error if search doesnt bring any results
 - [ ] Treat possible invalid or null query params (maybe a parser function)

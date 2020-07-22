@@ -95,6 +95,10 @@ func getClient() *mongo.Client {
 
 // Find logs with filter and ordered by decrescent timestamp, can limit & skip items in dataset.
 func findLogsFilter(size string, filter bson.D, skip string) (error, []*Jitsilog) {
+	tz, err := time.LoadLocation("America/Sao_Paulo")
+	if err != nil {
+		log.Info("Failed to load TZ info", err)
+	}
 	client := getClient()
 	optFind := options.Find()
 	var jitsilogs []*Jitsilog
@@ -152,6 +156,12 @@ func findLogsFilter(size string, filter bson.D, skip string) (error, []*Jitsilog
 			logerror = err
 			return logerror, nil
 		}
+		
+		t, err := time.ParseInLocation(time.RFC3339, jitsilog.Timestamp, tz)
+		if err != nil {
+			log.Info("Failed to parse ISO8601", err)
+		}
+		jitsilog.Timestamp = t.In(tz).String()
 		jitsilogs = append(jitsilogs, &jitsilog)
 	}
 	err = client.Disconnect(context.TODO())
