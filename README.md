@@ -4,8 +4,7 @@ Microservice para visualizacao do logging de eventos de login e logout do Jitsi.
 
 ## TODOs
 
-- [ ] return error to client when something goes wrong instead of 200, nil
-- [ ] return error if search doesnt bring any results
+- [ ] return error to client when something goes wrong instead of 200, nil and if search doesnt bring any results
 - [ ] Treat possible invalid or null query params (maybe a parser function)
 - [ ] Add w at find functions
 - [ ] Summary with presence time (Diff between login/logout)
@@ -14,6 +13,8 @@ Microservice para visualizacao do logging de eventos de login e logout do Jitsi.
 - [ ] search about CORS
 - [ ] Convert to string from MongoDB in case of data with divergent type
 - [ ] Input sanitize
+- [ ] Tests?
+- [ ] Pipeline (docker build)
 - [ ] REFACT IT
 
 ## Agradecimentos
