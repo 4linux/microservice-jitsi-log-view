@@ -29,6 +29,9 @@ var (
 
 	// Port to listen.
 	PORT string
+
+	// Timezone to display datetime.
+	TIMEZONE string
 )
 
 // Data structure as defined in https://github.com/bryanasdev000/microservice-jitsi-log .
@@ -69,6 +72,11 @@ func init() {
 	} else {
 		COLLECTION = "logs"
 	}
+	if len(os.Getenv("TIMEZONE")) > 0 {
+		TIMEZONE = os.Getenv("TIMEZONE")
+	} else {
+		TIMEZONE = "America/Sao_Paulo"
+	}
 	if len(os.Getenv("PORT")) > 0 && strings.HasPrefix(PORT, ":") == true {
 		PORT = os.Getenv("PORT")
 	} else {
@@ -80,6 +88,7 @@ func init() {
 		"Database":   DATABASE,
 		"Collection": COLLECTION}).Info("Database Connection Info")
 	log.Info("Listening at ", PORT)
+	log.Info("Using ", TIMEZONE, " as timezone")
 }
 
 // Creates and return a MongoDB client.
@@ -95,27 +104,25 @@ func getClient() *mongo.Client {
 
 // Find logs with filter and ordered by decrescent timestamp, can limit & skip items in dataset.
 func findLogsFilter(size string, filter bson.D, skip string) (error, []*Jitsilog) {
-	tz, err := time.LoadLocation("America/Sao_Paulo")
+	tz, err := time.LoadLocation(TIMEZONE)
 	if err != nil {
-		log.Info("Failed to load TZ info", err)
+		log.WithFields(log.Fields{
+			"error": err}).Fatal("Failed to load TZ info")
 	}
 	client := getClient()
 	optFind := options.Find()
 	var jitsilogs []*Jitsilog
-	var logerror error
 	sizeInt, err := strconv.ParseInt(size, 10, 64)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Failed to convert size argument to int")
-		logerror = err
-		return logerror, nil
+		return err, nil
 	}
 	skipInt, err := strconv.ParseInt(skip, 10, 64)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Failed to convert skip argument to int")
-		logerror = err
-		return logerror, nil
+		return err, nil
 	}
 	log.Debug("Dataset row limit ", sizeInt)
 	log.Debug("Dataset row skip ", skipInt)
@@ -124,8 +131,7 @@ func findLogsFilter(size string, filter bson.D, skip string) (error, []*Jitsilog
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Error on count of the documents")
-		logerror = err
-		return logerror, nil
+		return err, nil
 	}
 	if skipInt > count {
 		skipInt = count
@@ -143,8 +149,7 @@ func findLogsFilter(size string, filter bson.D, skip string) (error, []*Jitsilog
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Error on finding the documents")
-		logerror = err
-		return logerror, nil
+		return err, nil
 	}
 	log.Debug("Connection to MongoDB opened.")
 	for cursor.Next(context.TODO()) {
@@ -153,24 +158,24 @@ func findLogsFilter(size string, filter bson.D, skip string) (error, []*Jitsilog
 		if err != nil {
 			log.WithFields(log.Fields{
 				"error": err}).Info("Error on decoding the document")
-			logerror = err
-			return logerror, nil
+			return err, nil
 		}
-		
 		t, err := time.ParseInLocation(time.RFC3339, jitsilog.Timestamp, tz)
 		if err != nil {
-			log.Info("Failed to parse ISO8601", err)
+			log.WithFields(log.Fields{
+				"error": err}).Info("Failed to parse ISO8601")
 		}
 		jitsilog.Timestamp = t.In(tz).String()
 		jitsilogs = append(jitsilogs, &jitsilog)
 	}
+	log.Debug("Data retrived")
 	err = client.Disconnect(context.TODO())
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Fatal("Failed to disconnect from database!")
 	}
 	log.Debug("Connection to MongoDB closed.")
-	return logerror, jitsilogs
+	return nil, jitsilogs
 }
 
 // Default handler, return the name of this service.
@@ -193,7 +198,8 @@ func latestLogsHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	err, jitsilogs := findLogsFilter(queryParams["size"][0], bson.D{}, queryParams["skip"][0])
 	if err != nil {
-		log.Info(err)
+		log.WithFields(log.Fields{
+			"error": err}).Info("Failed to get logs!")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
@@ -206,7 +212,8 @@ func searchCourseHandler(w http.ResponseWriter, r *http.Request) {
 	filter = append(filter, bson.E{Key: "curso", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["id"][0], Options: "gi"}}}})
 	err, jitsilogs := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	if err != nil {
-		log.Info(err)
+		log.WithFields(log.Fields{
+			"error": err}).Info("Failed to get logs!")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
@@ -219,7 +226,8 @@ func searchClassHandler(w http.ResponseWriter, r *http.Request) {
 	filter = append(filter, bson.E{Key: "turma", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["id"][0], Options: "gi"}}}})
 	err, jitsilogs := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	if err != nil {
-		log.Info(err)
+		log.WithFields(log.Fields{
+			"error": err}).Info("Failed to get logs!")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
@@ -232,7 +240,8 @@ func searchRoomHandler(w http.ResponseWriter, r *http.Request) {
 	filter = append(filter, bson.E{Key: "sala", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["id"][0], Options: "gi"}}}})
 	err, jitsilogs := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	if err != nil {
-		log.Info(err)
+		log.WithFields(log.Fields{
+			"error": err}).Info("Failed to get logs!")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
@@ -245,7 +254,8 @@ func searchStudentHandler(w http.ResponseWriter, r *http.Request) {
 	filter = append(filter, bson.E{Key: "email", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["email"][0], Options: "gi"}}}})
 	err, jitsilogs := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	if err != nil {
-		log.Info(err)
+		log.WithFields(log.Fields{
+			"error": err}).Info("Failed to get logs!")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
