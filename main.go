@@ -90,6 +90,7 @@ func init() {
 		"Collection": COLLECTION}).Info("Database Connection Info")
 	log.Info("Listening at ", PORT)
 	log.Info("Using ", TIMEZONE, " as timezone")
+    log.Info("CORS Enabled")
 }
 
 // Creates and return a MongoDB client.
