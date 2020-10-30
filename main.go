@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
 	"go.mongodb.org/mongo-driver/bson"
@@ -164,8 +165,10 @@ func findLogsFilter(size string, filter bson.D, skip string) (error, []*Jitsilog
 		if err != nil {
 			log.WithFields(log.Fields{
 				"error": err}).Info("Failed to parse ISO8601")
+			jitsilog.Timestamp = "Falha no parser"
+		} else {
+			jitsilog.Timestamp = t.In(tz).String()
 		}
-		jitsilog.Timestamp = t.In(tz).String()
 		jitsilogs = append(jitsilogs, &jitsilog)
 	}
 	log.Debug("Data retrived")
@@ -273,5 +276,6 @@ func main() {
 	api.HandleFunc("/student", searchStudentHandler).Methods("GET").Queries("email", "{email}")
 	api.HandleFunc("/room", searchRoomHandler).Methods("GET").Queries("id", "{id}")
 	http.Handle("/", router)
-	log.Fatal(http.ListenAndServe(PORT, nil))
+	loggedRouter := handlers.LoggingHandler(os.Stdout, router)
+	log.Fatal(http.ListenAndServe(PORT, handlers.CORS()(loggedRouter)))
 }
