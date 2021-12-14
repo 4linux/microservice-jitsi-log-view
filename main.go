@@ -2,8 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	log "github.com/sirupsen/logrus"
@@ -11,11 +18,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"net/http"
-	"os"
-	"strconv"
-	"strings"
-	"time"
 )
 
 var (
@@ -47,42 +49,66 @@ type Jitsilog struct {
 	Action    string `json:"action"`
 }
 
+func cabecalhoCSV() (c []string) {
+	c = append(c, "sala")
+	c = append(c, "curso")
+	c = append(c, "turma")
+	c = append(c, "aluno")
+	c = append(c, "jid")
+	c = append(c, "email")
+	c = append(c, "timestamp")
+	c = append(c, "action")
+	return
+}
+
+func (jl *Jitsilog) registroCSV() (r []string) {
+	r = append(r, jl.Sala)
+	r = append(r, jl.Curso)
+	r = append(r, jl.Turma)
+	r = append(r, jl.Aluno)
+	r = append(r, jl.Jid)
+	r = append(r, jl.Email)
+	r = append(r, jl.Timestamp)
+	r = append(r, jl.Action)
+	return
+}
+
 // Setup of logs and database related configs.
 func init() {
 	log.Debug("microservice-jitsi-log-view init")
 	log.SetFormatter(&log.JSONFormatter{})
 	log.SetOutput(os.Stdout)
 	log.SetReportCaller(true)
-	if len(os.Getenv("DEBUG")) > 0 && os.Getenv("DEBUG") == "true" {
+	if os.Getenv("DEBUG") == "true" {
 		log.SetLevel(log.DebugLevel)
 	} else {
 		log.SetLevel(log.InfoLevel)
 	}
-	if len(os.Getenv("URI_MONGODB")) > 0 {
-		URI_MONGODB = os.Getenv("URI_MONGODB")
+	if mongoUri, found := os.LookupEnv("URI_MONGODB"); found {
+		URI_MONGODB = mongoUri
 	} else {
 		URI_MONGODB = "mongodb://localhost:27017"
 	}
-	if len(os.Getenv("DATABASE")) > 0 {
-		DATABASE = os.Getenv("DATABASE")
+	if dbName, found := os.LookupEnv("DATABASE"); found {
+		DATABASE = dbName
 	} else {
 		DATABASE = "jitsilog"
 	}
-	if len(os.Getenv("COLLECTION")) > 0 {
-		COLLECTION = os.Getenv("COLLECTION")
+	if collection, found := os.LookupEnv("COLLECTION"); found {
+		COLLECTION = collection
 	} else {
 		COLLECTION = "logs"
 	}
-	if len(os.Getenv("TIMEZONE")) > 0 {
-		TIMEZONE = os.Getenv("TIMEZONE")
+	if tz, found := os.LookupEnv("TIMEZONE"); found {
+		TIMEZONE = tz
 	} else {
 		TIMEZONE = "America/Sao_Paulo"
 	}
-	if len(os.Getenv("PORT")) > 0 && strings.HasPrefix(PORT, ":") == true {
-		PORT = os.Getenv("PORT")
+	if port := os.Getenv("PORT"); strings.HasPrefix(port, ":") {
+		PORT = port
 	} else {
 		PORT = ":8080"
-		log.Info("Port variable is missing or in wrong format (missing a colon ( : ) at start. It should be like ':8080'), using default one")
+		log.Info("Port variable is missing or in wrong format (missing a colon ( : ) at start. It should be like ':8080'), using default: :8080")
 	}
 	log.WithFields(log.Fields{
 		"URI":        URI_MONGODB,
@@ -90,7 +116,7 @@ func init() {
 		"Collection": COLLECTION}).Info("Database Connection Info")
 	log.Info("Listening at ", PORT)
 	log.Info("Using ", TIMEZONE, " as timezone")
-    log.Info("CORS Enabled")
+	log.Info("CORS Enabled")
 }
 
 // Creates and return a MongoDB client.
@@ -114,12 +140,14 @@ func findLogsFilter(size string, filter bson.D, skip string) (error, []*Jitsilog
 	client := getClient()
 	optFind := options.Find()
 	var jitsilogs []*Jitsilog
+
 	sizeInt, err := strconv.ParseInt(size, 10, 64)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Failed to convert size argument to int")
 		return err, nil
 	}
+
 	skipInt, err := strconv.ParseInt(skip, 10, 64)
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -265,11 +293,46 @@ func searchStudentHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(jitsilogs)
 }
 
+// Query all logs earlier than a timestamp and export them as a CSV file
+func searchAndExportAsCSV(w http.ResponseWriter, r *http.Request) {
+	queryParams := r.URL.Query()
+	timestamp := queryParams.Get("ts")
+	now := time.Now()
+
+	// preparing the response to output a csv file
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition",
+		"attachment; filename=jitsi-presence-logger."+now.Format(time.RFC3339)+".csv")
+	csvWriter := csv.NewWriter(w)
+	csvWriter.Comma = ';'
+
+	// querying database
+	filter := bson.D{{"timestamp", bson.D{{"$gte", timestamp}}}}
+	err, jitsilogs := findLogsFilter("0", filter, "0")
+
+	// writing response
+	if err != nil {
+		log.WithFields(log.Fields{
+			"error": err}).Info("Failed to get logs!")
+		csvWriter.Write([]string{
+			"Ocorreu um erro ao realizar a requisição", err.Error(),
+		})
+	} else {
+		csvWriter.Write(cabecalhoCSV())
+		for _, log := range jitsilogs {
+			csvWriter.Write(log.registroCSV())
+		}
+	}
+
+	csvWriter.Flush()
+}
+
 func main() {
 	router := mux.NewRouter()
 	router.HandleFunc("/", defaultHandler).Methods(http.MethodGet)
 	router.HandleFunc("/healthcheck", checkHealth).Methods(http.MethodGet)
 	version := router.PathPrefix("/v1").Subrouter()
+	version.HandleFunc("/csv", searchAndExportAsCSV).Methods(http.MethodGet).Queries("ts", "{ts}")
 	api := version.PathPrefix("/logs").Subrouter()
 	api.HandleFunc("/last", latestLogsHandler).Methods("GET")
 	api.HandleFunc("/course", searchCourseHandler).Methods("GET").Queries("id", "{id}")
