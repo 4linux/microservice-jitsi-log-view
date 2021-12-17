@@ -84,36 +84,24 @@ func init() {
 	} else {
 		log.SetLevel(log.InfoLevel)
 	}
-	if mongoUri, found := os.LookupEnv("URI_MONGODB"); found {
-		URI_MONGODB = mongoUri
-	} else {
-		URI_MONGODB = "mongodb://localhost:27017"
-	}
-	if dbName, found := os.LookupEnv("DATABASE"); found {
-		DATABASE = dbName
-	} else {
-		DATABASE = "jitsilog"
-	}
-	if collection, found := os.LookupEnv("COLLECTION"); found {
-		COLLECTION = collection
-	} else {
-		COLLECTION = "logs"
-	}
-	if tz, found := os.LookupEnv("TIMEZONE"); found {
-		TIMEZONE = tz
-	} else {
-		TIMEZONE = "America/Sao_Paulo"
-	}
+
+	URI_MONGODB = getenv("URI_MONGODB", "mongodb://localhost:27017")
+	DATABASE = getenv("DATABASE", "jitsilog")
+	COLLECTION = getenv("COLLECTION", "logs")
+	TIMEZONE = getenv("TIMEZONE", "America/Sao_Paulo")
+
 	if port := os.Getenv("PORT"); strings.HasPrefix(port, ":") {
 		PORT = port
 	} else {
 		PORT = ":8080"
 		log.Info("Port variable is missing or in wrong format (missing a colon ( : ) at start. It should be like ':8080'), using default: :8080")
 	}
+
 	log.WithFields(log.Fields{
 		"URI":        URI_MONGODB,
 		"Database":   DATABASE,
 		"Collection": COLLECTION}).Info("Database Connection Info")
+
 	log.Info("Listening at ", PORT)
 	log.Info("Using ", TIMEZONE, " as timezone")
 	log.Info("CORS Enabled")
@@ -130,8 +118,36 @@ func getClient() *mongo.Client {
 	return client
 }
 
+// convertToInt tries to convert all strings passed to int64,
+// returning a slice of int64 on success. If any conversion fails,
+// the error is returned alongside the index of the non-integer string.
+func convertToInt(values []string) ([]int64, int, error) {
+	ints := make([]int64, len(values))
+
+	for idx, v := range values {
+		i, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, idx, err
+		}
+		ints[idx] = i
+	}
+
+	return ints, -1, nil
+}
+
+// getenv gets the value associated with the environtment variable
+// passed in as `key` and returns it, if found. Otherwise, it returns
+// `defaultValue`.
+func getenv(key, defaultValue string) string {
+	if value, found := os.LookupEnv(key); found {
+		return value
+	}
+
+	return defaultValue
+}
+
 // Find logs with filter and ordered by decrescent timestamp, can limit & skip items in dataset.
-func findLogsFilter(size string, filter bson.D, skip string) (error, []*Jitsilog) {
+func findLogsFilter(size string, filter bson.D, skip string) ([]*Jitsilog, error) {
 	tz, err := time.LoadLocation(TIMEZONE)
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -141,45 +157,40 @@ func findLogsFilter(size string, filter bson.D, skip string) (error, []*Jitsilog
 	optFind := options.Find()
 	var jitsilogs []*Jitsilog
 
-	sizeInt, err := strconv.ParseInt(size, 10, 64)
+	sizeAndSkip, failIdx, err := convertToInt([]string{size, skip})
 	if err != nil {
 		log.WithFields(log.Fields{
-			"error": err}).Info("Failed to convert size argument to int")
-		return err, nil
+			"error": err}).Info(fmt.Sprintf(
+			"Failed to convert argument at index `%d` to int", failIdx))
+		return nil, err
 	}
 
-	skipInt, err := strconv.ParseInt(skip, 10, 64)
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error": err}).Info("Failed to convert skip argument to int")
-		return err, nil
-	}
-	log.Debug("Dataset row limit ", sizeInt)
-	log.Debug("Dataset row skip ", skipInt)
+	log.Debug("Dataset row limit ", sizeAndSkip[0])
+	log.Debug("Dataset row skip ", sizeAndSkip[1])
 	collection := client.Database(DATABASE).Collection(COLLECTION)
 	count, err := collection.CountDocuments(context.TODO(), filter)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Error on count of the documents")
-		return err, nil
+		return nil, err
 	}
-	if skipInt > count {
-		skipInt = count
-	} else if skipInt < 0 {
-		skipInt = 0
+	if sizeAndSkip[1] > count {
+		sizeAndSkip[1] = count
+	} else if sizeAndSkip[1] < 0 {
+		sizeAndSkip[1] = 0
 	}
-	if sizeInt < 0 {
-		sizeInt = 20
+	if sizeAndSkip[0] < 0 {
+		sizeAndSkip[0] = 20
 	}
 	log.Debug("Dataset row max: ", count)
-	optFind.SetSkip(skipInt)
-	optFind.SetLimit(sizeInt)
+	optFind.SetLimit(sizeAndSkip[0])
+	optFind.SetSkip(sizeAndSkip[1])
 	optFind.SetSort(bson.D{{"timestamp", -1}})
 	cursor, err := collection.Find(context.TODO(), filter, optFind)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Error on finding the documents")
-		return err, nil
+		return nil, err
 	}
 	log.Debug("Connection to MongoDB opened.")
 	for cursor.Next(context.TODO()) {
@@ -188,7 +199,7 @@ func findLogsFilter(size string, filter bson.D, skip string) (error, []*Jitsilog
 		if err != nil {
 			log.WithFields(log.Fields{
 				"error": err}).Info("Error on decoding the document")
-			return err, nil
+			return nil, err
 		}
 		t, err := time.ParseInLocation(time.RFC3339, jitsilog.Timestamp, tz)
 		if err != nil {
@@ -207,7 +218,7 @@ func findLogsFilter(size string, filter bson.D, skip string) (error, []*Jitsilog
 			"error": err}).Fatal("Failed to disconnect from database!")
 	}
 	log.Debug("Connection to MongoDB closed.")
-	return nil, jitsilogs
+	return jitsilogs, nil
 }
 
 // Default handler, return the name of this service.
@@ -228,7 +239,7 @@ func checkHealth(w http.ResponseWriter, r *http.Request) {
 // Query the latest logs with a variable dataset size based on the URL.
 func latestLogsHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
-	err, jitsilogs := findLogsFilter(queryParams["size"][0], bson.D{}, queryParams["skip"][0])
+	jitsilogs, err := findLogsFilter(queryParams["size"][0], bson.D{}, queryParams["skip"][0])
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Failed to get logs!")
@@ -242,7 +253,7 @@ func searchCourseHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{}}
 	filter = append(filter, bson.E{Key: "curso", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["id"][0], Options: "gi"}}}})
-	err, jitsilogs := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
+	jitsilogs, err := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Failed to get logs!")
@@ -256,7 +267,7 @@ func searchClassHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{}}
 	filter = append(filter, bson.E{Key: "turma", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["id"][0], Options: "gi"}}}})
-	err, jitsilogs := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
+	jitsilogs, err := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Failed to get logs!")
@@ -270,7 +281,7 @@ func searchRoomHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{}}
 	filter = append(filter, bson.E{Key: "sala", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["id"][0], Options: "gi"}}}})
-	err, jitsilogs := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
+	jitsilogs, err := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Failed to get logs!")
@@ -284,7 +295,7 @@ func searchStudentHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{}}
 	filter = append(filter, bson.E{Key: "email", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["email"][0], Options: "gi"}}}})
-	err, jitsilogs := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
+	jitsilogs, err := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Failed to get logs!")
@@ -297,6 +308,10 @@ func searchStudentHandler(w http.ResponseWriter, r *http.Request) {
 func searchAndExportAsCSV(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	timestamp := queryParams.Get("ts")
+	curso := queryParams.Get("curso")
+	turma := queryParams.Get("turma")
+	email := queryParams.Get("email")
+	sala := queryParams.Get("sala")
 	now := time.Now()
 
 	// preparing the response to output a csv file
@@ -308,7 +323,29 @@ func searchAndExportAsCSV(w http.ResponseWriter, r *http.Request) {
 
 	// querying database
 	filter := bson.D{{"timestamp", bson.D{{"$gte", timestamp}}}}
-	err, jitsilogs := findLogsFilter("0", filter, "0")
+
+	if curso != "" {
+		filter = append(filter, bson.E{Key: "curso", Value: curso})
+	}
+
+	if turma != "" {
+		filter = append(filter,
+			bson.E{Key: "turma", Value: bson.D{{"$regex", primitive.Regex{Pattern: turma, Options: "gi"}}}})
+	}
+
+	if email != "" {
+		filter = append(filter, bson.E{
+			Key: "email", Value: bson.D{{"$regex", primitive.Regex{Pattern: email, Options: "gi"}}}},
+		)
+	}
+
+	if sala != "" {
+		filter = append(filter, bson.E{
+			Key: "sala", Value: bson.D{{"$regex", primitive.Regex{Pattern: sala, Options: "gi"}}}})
+	}
+	fmt.Printf("%+v\n", filter)
+
+	jitsilogs, err := findLogsFilter("0", filter, "0")
 
 	// writing response
 	if err != nil {
@@ -332,7 +369,9 @@ func main() {
 	router.HandleFunc("/", defaultHandler).Methods(http.MethodGet)
 	router.HandleFunc("/healthcheck", checkHealth).Methods(http.MethodGet)
 	version := router.PathPrefix("/v1").Subrouter()
-	version.HandleFunc("/csv", searchAndExportAsCSV).Methods(http.MethodGet).Queries("ts", "{ts}")
+	version.HandleFunc("/csv", searchAndExportAsCSV).Methods(http.MethodGet).Queries(
+		"ts", "{ts}", "curso", "{curso:(?:\\d+)?}", "turma", "{turma:(?:\\d+)?}",
+		"email", "{email}", "sala", "{sala}")
 	api := version.PathPrefix("/logs").Subrouter()
 	api.HandleFunc("/last", latestLogsHandler).Methods("GET")
 	api.HandleFunc("/course", searchCourseHandler).Methods("GET").Queries("id", "{id}")
