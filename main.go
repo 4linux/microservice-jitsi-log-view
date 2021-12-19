@@ -92,6 +92,13 @@ func iterLogs(logs []*Jitsilog) <-chan *Jitsilog {
 	return ch
 }
 
+func chanToSlice(sliceToAppendTo []*Jitsilog, logs <-chan *Jitsilog) []*Jitsilog {
+	for log := range logs {
+		sliceToAppendTo = append(sliceToAppendTo, log)
+	}
+	return sliceToAppendTo
+}
+
 func filterByAction(logs <-chan *Jitsilog, action string) <-chan *Jitsilog {
 	ch := make(chan *Jitsilog, CHAN_BUFFER_SIZE)
 
@@ -432,7 +439,6 @@ func searchAndExportAsCSV(w http.ResponseWriter, r *http.Request) {
 		filter = append(filter, bson.E{
 			Key: "sala", Value: bson.D{{"$regex", primitive.Regex{Pattern: sala, Options: "gi"}}}})
 	}
-	fmt.Printf("%+v\n", filter)
 
 	jitsilogs, err := findLogsFilter("0", filter, "0")
 	var logsToWrite []*Jitsilog
@@ -459,6 +465,9 @@ func searchAndExportAsCSV(w http.ResponseWriter, r *http.Request) {
 							logsToWrite, findClosestTimeTo(t0, iterLogs(userLog.logs)))
 					}
 				}
+			} else {
+				logsToWrite = chanToSlice(
+					logsToWrite, filterByAction(iterLogs(jitsilogs), "login"))
 			}
 
 			if t1s != "" {
@@ -472,6 +481,9 @@ func searchAndExportAsCSV(w http.ResponseWriter, r *http.Request) {
 							logsToWrite, findClosestTimeTo(t1, iterLogs(userLog.logs)))
 					}
 				}
+			} else {
+				logsToWrite = chanToSlice(
+					logsToWrite, filterByAction(iterLogs(jitsilogs), "logout"))
 			}
 		}
 
