@@ -33,8 +33,13 @@ var (
 	// Port to listen.
 	PORT string
 
-	// Timezone to display datetime.
-	TIMEZONE string
+	// Timezone as *time.Location
+	TIMEZONE *time.Location
+)
+
+const (
+	DEFAULT_TIMEZONE = "America/Sao_Paulo"
+	CHAN_BUFFER_SIZE = 100
 )
 
 // Data structure as defined in https://github.com/bryanasdev000/microservice-jitsi-log .
@@ -46,6 +51,7 @@ type Jitsilog struct {
 	Jid       string `json:"jid"`
 	Email     string `json:"email"`
 	Timestamp string `json:"timestamp"`
+	timestamp time.Time
 	Action    string `json:"action"`
 }
 
@@ -73,6 +79,83 @@ func (jl *Jitsilog) registroCSV() (r []string) {
 	return
 }
 
+func iterLogs(logs []*Jitsilog) <-chan *Jitsilog {
+	ch := make(chan *Jitsilog, CHAN_BUFFER_SIZE)
+
+	go func() {
+		for _, log := range logs {
+			ch <- log
+		}
+		close(ch)
+	}()
+
+	return ch
+}
+
+func filterByAction(logs <-chan *Jitsilog, action string) <-chan *Jitsilog {
+	ch := make(chan *Jitsilog, CHAN_BUFFER_SIZE)
+
+	go func() {
+		for log := range logs {
+			if log.Action == action {
+				ch <- log
+			}
+		}
+		close(ch)
+	}()
+
+	return ch
+}
+
+type logsByEmail struct {
+	email string
+	logs  []*Jitsilog
+}
+
+func groupbyEmail(logs <-chan *Jitsilog) <-chan logsByEmail {
+	ch := make(chan logsByEmail, CHAN_BUFFER_SIZE)
+
+	go func() {
+		entries := make(map[string][]*Jitsilog)
+		for log := range logs {
+			entries[log.Email] = append(entries[log.Email], log)
+		}
+
+		for email, logs := range entries {
+			ch <- logsByEmail{email, logs}
+		}
+		close(ch)
+	}()
+
+	return ch
+}
+
+func findClosestTimeTo(dur time.Duration, logs <-chan *Jitsilog) *Jitsilog {
+	// helper abs function because Go doesn't fucking provide a
+	// decent abs() for integers
+	abs := func(d time.Duration) time.Duration {
+		if d < 0 {
+			return -d
+		}
+		return d
+	}
+
+	var closest *Jitsilog
+	offset := 24 * time.Hour
+
+	for log := range logs {
+		h, m, s := log.timestamp.Clock()
+		logDur, _ := time.ParseDuration(fmt.Sprintf("%dh%dm%ds", h, m, s))
+		tmpOffset := logDur - dur
+		if abs(tmpOffset) < abs(offset) {
+			offset = tmpOffset
+			closest = log
+		}
+	}
+
+	return closest
+}
+
 // Setup of logs and database related configs.
 func init() {
 	log.Debug("microservice-jitsi-log-view init")
@@ -88,7 +171,15 @@ func init() {
 	URI_MONGODB = getenv("URI_MONGODB", "mongodb://localhost:27017")
 	DATABASE = getenv("DATABASE", "jitsilog")
 	COLLECTION = getenv("COLLECTION", "logs")
-	TIMEZONE = getenv("TIMEZONE", "America/Sao_Paulo")
+	TZ := getenv("TIMEZONE", DEFAULT_TIMEZONE)
+	tz, err := time.LoadLocation(TZ)
+	if err != nil {
+		log.WithField("timezone", TZ).Warnf(
+			"could not parse timezone; falling back to %s", DEFAULT_TIMEZONE)
+		TIMEZONE, _ = time.LoadLocation(DEFAULT_TIMEZONE)
+	} else {
+		TIMEZONE = tz
+	}
 
 	if port := os.Getenv("PORT"); strings.HasPrefix(port, ":") {
 		PORT = port
@@ -103,7 +194,7 @@ func init() {
 		"Collection": COLLECTION}).Info("Database Connection Info")
 
 	log.Info("Listening at ", PORT)
-	log.Info("Using ", TIMEZONE, " as timezone")
+	log.Info("Using ", TIMEZONE.String(), " as timezone")
 	log.Info("CORS Enabled")
 }
 
@@ -148,11 +239,6 @@ func getenv(key, defaultValue string) string {
 
 // Find logs with filter and ordered by decrescent timestamp, can limit & skip items in dataset.
 func findLogsFilter(size string, filter bson.D, skip string) ([]*Jitsilog, error) {
-	tz, err := time.LoadLocation(TIMEZONE)
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error": err}).Fatal("Failed to load TZ info")
-	}
 	client := getClient()
 	optFind := options.Find()
 	var jitsilogs []*Jitsilog
@@ -201,13 +287,14 @@ func findLogsFilter(size string, filter bson.D, skip string) ([]*Jitsilog, error
 				"error": err}).Info("Error on decoding the document")
 			return nil, err
 		}
-		t, err := time.ParseInLocation(time.RFC3339, jitsilog.Timestamp, tz)
+		t, err := time.ParseInLocation(time.RFC3339, jitsilog.Timestamp, TIMEZONE)
 		if err != nil {
 			log.WithFields(log.Fields{
 				"error": err}).Info("Failed to parse ISO8601")
 			jitsilog.Timestamp = "Falha no parser"
 		} else {
-			jitsilog.Timestamp = t.In(tz).String()
+			jitsilog.timestamp = t.In(TIMEZONE)
+			jitsilog.Timestamp = jitsilog.timestamp.String()
 		}
 		jitsilogs = append(jitsilogs, &jitsilog)
 	}
@@ -312,6 +399,8 @@ func searchAndExportAsCSV(w http.ResponseWriter, r *http.Request) {
 	turma := queryParams.Get("turma")
 	email := queryParams.Get("email")
 	sala := queryParams.Get("sala")
+	t0s := queryParams.Get("t0")
+	t1s := queryParams.Get("t1")
 	now := time.Now()
 
 	// preparing the response to output a csv file
@@ -346,6 +435,7 @@ func searchAndExportAsCSV(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("%+v\n", filter)
 
 	jitsilogs, err := findLogsFilter("0", filter, "0")
+	var logsToWrite []*Jitsilog
 
 	// writing response
 	if err != nil {
@@ -355,8 +445,38 @@ func searchAndExportAsCSV(w http.ResponseWriter, r *http.Request) {
 			"Ocorreu um erro ao realizar a requisição", err.Error(),
 		})
 	} else {
+		if t0s == "" && t1s == "" {
+			logsToWrite = jitsilogs
+		} else {
+			if t0s != "" {
+				t0, err := time.ParseDuration(t0s + "ms")
+				if err == nil {
+					loginLogs := filterByAction(iterLogs(jitsilogs), "login")
+					loginLogsByEmail := groupbyEmail(loginLogs)
+
+					for userLog := range loginLogsByEmail {
+						logsToWrite = append(
+							logsToWrite, findClosestTimeTo(t0, iterLogs(userLog.logs)))
+					}
+				}
+			}
+
+			if t1s != "" {
+				t1, err := time.ParseDuration(t1s + "ms")
+				if err == nil {
+					logoutLogs := filterByAction(iterLogs(jitsilogs), "logout")
+					logoutLogsByEmail := groupbyEmail(logoutLogs)
+
+					for userLog := range logoutLogsByEmail {
+						logsToWrite = append(
+							logsToWrite, findClosestTimeTo(t1, iterLogs(userLog.logs)))
+					}
+				}
+			}
+		}
+
 		csvWriter.Write(cabecalhoCSV())
-		for _, log := range jitsilogs {
+		for _, log := range logsToWrite {
 			csvWriter.Write(log.registroCSV())
 		}
 	}
@@ -371,7 +491,8 @@ func main() {
 	version := router.PathPrefix("/v1").Subrouter()
 	version.HandleFunc("/csv", searchAndExportAsCSV).Methods(http.MethodGet).Queries(
 		"ts", "{ts}", "curso", "{curso:(?:\\d+)?}", "turma", "{turma:(?:\\d+)?}",
-		"email", "{email}", "sala", "{sala}")
+		"email", "{email}", "sala", "{sala}",
+		"t0", "{t0:(?:\\d+)?}", "t1", "{t1:(?:\\d+)?}")
 	api := version.PathPrefix("/logs").Subrouter()
 	api.HandleFunc("/last", latestLogsHandler).Methods("GET")
 	api.HandleFunc("/course", searchCourseHandler).Methods("GET").Queries("id", "{id}")
