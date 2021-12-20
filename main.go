@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -39,7 +40,6 @@ var (
 
 const (
 	DEFAULT_TIMEZONE = "America/Sao_Paulo"
-	CHAN_BUFFER_SIZE = 100
 )
 
 // Data structure as defined in https://github.com/bryanasdev000/microservice-jitsi-log .
@@ -80,7 +80,7 @@ func (jl *Jitsilog) registroCSV() (r []string) {
 }
 
 func iterLogs(logs []*Jitsilog) <-chan *Jitsilog {
-	ch := make(chan *Jitsilog, CHAN_BUFFER_SIZE)
+	ch := make(chan *Jitsilog)
 
 	go func() {
 		for _, log := range logs {
@@ -100,7 +100,7 @@ func chanToSlice(sliceToAppendTo []*Jitsilog, logs <-chan *Jitsilog) []*Jitsilog
 }
 
 func filterByAction(logs <-chan *Jitsilog, action string) <-chan *Jitsilog {
-	ch := make(chan *Jitsilog, CHAN_BUFFER_SIZE)
+	ch := make(chan *Jitsilog)
 
 	go func() {
 		for log := range logs {
@@ -114,22 +114,23 @@ func filterByAction(logs <-chan *Jitsilog, action string) <-chan *Jitsilog {
 	return ch
 }
 
-type logsByEmail struct {
-	email string
+type groupBy struct {
+	field string
 	logs  []*Jitsilog
 }
 
-func groupbyEmail(logs <-chan *Jitsilog) <-chan logsByEmail {
-	ch := make(chan logsByEmail, CHAN_BUFFER_SIZE)
+func groupbyField(fn func(*Jitsilog) string, logs <-chan *Jitsilog) <-chan groupBy {
+	ch := make(chan groupBy)
 
 	go func() {
 		entries := make(map[string][]*Jitsilog)
 		for log := range logs {
-			entries[log.Email] = append(entries[log.Email], log)
+			field := fn(log)
+			entries[field] = append(entries[field], log)
 		}
 
-		for email, logs := range entries {
-			ch <- logsByEmail{email, logs}
+		for field, logs := range entries {
+			ch <- groupBy{field, logs}
 		}
 		close(ch)
 	}()
@@ -454,15 +455,20 @@ func searchAndExportAsCSV(w http.ResponseWriter, r *http.Request) {
 		if t0s == "" && t1s == "" {
 			logsToWrite = jitsilogs
 		} else {
+			byEmail := func(jl *Jitsilog) string { return jl.Email }
+			byDate := func(jl *Jitsilog) string { return jl.timestamp.Format("2006-01-02") }
+
 			if t0s != "" {
 				t0, err := time.ParseDuration(t0s + "ms")
 				if err == nil {
 					loginLogs := filterByAction(iterLogs(jitsilogs), "login")
-					loginLogsByEmail := groupbyEmail(loginLogs)
+					loginLogsByEmail := groupbyField(byEmail, loginLogs)
 
 					for userLog := range loginLogsByEmail {
-						logsToWrite = append(
-							logsToWrite, findClosestTimeTo(t0, iterLogs(userLog.logs)))
+						for dailyUserLog := range groupbyField(byDate, iterLogs(userLog.logs)) {
+							logsToWrite = append(
+								logsToWrite, findClosestTimeTo(t0, iterLogs(dailyUserLog.logs)))
+						}
 					}
 				}
 			} else {
@@ -474,17 +480,24 @@ func searchAndExportAsCSV(w http.ResponseWriter, r *http.Request) {
 				t1, err := time.ParseDuration(t1s + "ms")
 				if err == nil {
 					logoutLogs := filterByAction(iterLogs(jitsilogs), "logout")
-					logoutLogsByEmail := groupbyEmail(logoutLogs)
+					logoutLogsByEmail := groupbyField(byEmail, logoutLogs)
 
 					for userLog := range logoutLogsByEmail {
-						logsToWrite = append(
-							logsToWrite, findClosestTimeTo(t1, iterLogs(userLog.logs)))
+						for dailyUserLog := range groupbyField(byDate, iterLogs(userLog.logs)) {
+							logsToWrite = append(
+								logsToWrite, findClosestTimeTo(t1, iterLogs(dailyUserLog.logs)))
+						}
 					}
 				}
 			} else {
 				logsToWrite = chanToSlice(
 					logsToWrite, filterByAction(iterLogs(jitsilogs), "logout"))
 			}
+
+			sort.SliceStable(
+				logsToWrite, func(earlier, later int) bool {
+					return logsToWrite[later].timestamp.Before(logsToWrite[earlier].timestamp)
+				})
 		}
 
 		csvWriter.Write(cabecalhoCSV())
