@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"os"
 	"sort"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gorilla/handlers"
@@ -17,241 +15,21 @@ import (
 	log "github.com/sirupsen/logrus"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+
+	"microservice-jitsi-log-view/iterators"
+	"microservice-jitsi-log-view/setup"
+	"microservice-jitsi-log-view/types"
+	"microservice-jitsi-log-view/utils"
 )
-
-var (
-	// URI for MongoDB connection.
-	URI_MONGODB string
-
-	// Database to use for storing logs.
-	DATABASE string
-
-	// Collection to use for storing logs.
-	COLLECTION string
-
-	// Port to listen.
-	PORT string
-
-	// Timezone as *time.Location
-	TIMEZONE *time.Location
-)
-
-const (
-	DEFAULT_TIMEZONE = "America/Sao_Paulo"
-)
-
-// Data structure as defined in https://github.com/bryanasdev000/microservice-jitsi-log .
-type Jitsilog struct {
-	Sala      string `json:"sala"`
-	Curso     string `json:"curso"`
-	Turma     string `json:"turma"`
-	Aluno     string `json:"aluno"`
-	Jid       string `json:"jid"`
-	Email     string `json:"email"`
-	Timestamp string `json:"timestamp"`
-	timestamp time.Time
-	Action    string `json:"action"`
-}
-
-func cabecalhoCSV() (c []string) {
-	c = append(c, "sala")
-	c = append(c, "curso")
-	c = append(c, "turma")
-	c = append(c, "aluno")
-	c = append(c, "jid")
-	c = append(c, "email")
-	c = append(c, "timestamp")
-	c = append(c, "action")
-	return
-}
-
-func (jl *Jitsilog) registroCSV() (r []string) {
-	r = append(r, jl.Sala)
-	r = append(r, jl.Curso)
-	r = append(r, jl.Turma)
-	r = append(r, jl.Aluno)
-	r = append(r, jl.Jid)
-	r = append(r, jl.Email)
-	r = append(r, jl.Timestamp)
-	r = append(r, jl.Action)
-	return
-}
-
-func iterLogs(logs []*Jitsilog) <-chan *Jitsilog {
-	ch := make(chan *Jitsilog)
-
-	go func() {
-		for _, log := range logs {
-			ch <- log
-		}
-		close(ch)
-	}()
-
-	return ch
-}
-
-func chanToSlice(sliceToAppendTo []*Jitsilog, logs <-chan *Jitsilog) []*Jitsilog {
-	for log := range logs {
-		sliceToAppendTo = append(sliceToAppendTo, log)
-	}
-	return sliceToAppendTo
-}
-
-func filterByAction(logs <-chan *Jitsilog, action string) <-chan *Jitsilog {
-	ch := make(chan *Jitsilog)
-
-	go func() {
-		for log := range logs {
-			if log.Action == action {
-				ch <- log
-			}
-		}
-		close(ch)
-	}()
-
-	return ch
-}
-
-type groupBy struct {
-	field string
-	logs  []*Jitsilog
-}
-
-func groupbyField(fn func(*Jitsilog) string, logs <-chan *Jitsilog) <-chan groupBy {
-	ch := make(chan groupBy)
-
-	go func() {
-		entries := make(map[string][]*Jitsilog)
-		for log := range logs {
-			field := fn(log)
-			entries[field] = append(entries[field], log)
-		}
-
-		for field, logs := range entries {
-			ch <- groupBy{field, logs}
-		}
-		close(ch)
-	}()
-
-	return ch
-}
-
-func findClosestTimeTo(dur time.Duration, logs <-chan *Jitsilog) *Jitsilog {
-	// helper abs function because Go doesn't fucking provide a
-	// decent abs() for integers
-	abs := func(d time.Duration) time.Duration {
-		if d < 0 {
-			return -d
-		}
-		return d
-	}
-
-	var closest *Jitsilog
-	offset := 24 * time.Hour
-
-	for log := range logs {
-		h, m, s := log.timestamp.Clock()
-		logDur, _ := time.ParseDuration(fmt.Sprintf("%dh%dm%ds", h, m, s))
-		tmpOffset := logDur - dur
-		if abs(tmpOffset) < abs(offset) {
-			offset = tmpOffset
-			closest = log
-		}
-	}
-
-	return closest
-}
-
-// Setup of logs and database related configs.
-func init() {
-	log.Debug("microservice-jitsi-log-view init")
-	log.SetFormatter(&log.JSONFormatter{})
-	log.SetOutput(os.Stdout)
-	log.SetReportCaller(true)
-	if os.Getenv("DEBUG") == "true" {
-		log.SetLevel(log.DebugLevel)
-	} else {
-		log.SetLevel(log.InfoLevel)
-	}
-
-	URI_MONGODB = getenv("URI_MONGODB", "mongodb://localhost:27017")
-	DATABASE = getenv("DATABASE", "jitsilog")
-	COLLECTION = getenv("COLLECTION", "logs")
-	TZ := getenv("TIMEZONE", DEFAULT_TIMEZONE)
-	tz, err := time.LoadLocation(TZ)
-	if err != nil {
-		log.WithField("timezone", TZ).Warnf(
-			"could not parse timezone; falling back to %s", DEFAULT_TIMEZONE)
-		TIMEZONE, _ = time.LoadLocation(DEFAULT_TIMEZONE)
-	} else {
-		TIMEZONE = tz
-	}
-
-	if port := os.Getenv("PORT"); strings.HasPrefix(port, ":") {
-		PORT = port
-	} else {
-		PORT = ":8080"
-		log.Info("Port variable is missing or in wrong format (missing a colon ( : ) at start. It should be like ':8080'), using default: :8080")
-	}
-
-	log.WithFields(log.Fields{
-		"URI":        URI_MONGODB,
-		"Database":   DATABASE,
-		"Collection": COLLECTION}).Info("Database Connection Info")
-
-	log.Info("Listening at ", PORT)
-	log.Info("Using ", TIMEZONE.String(), " as timezone")
-	log.Info("CORS Enabled")
-}
-
-// Creates and return a MongoDB client.
-func getClient() *mongo.Client {
-	context, _ := context.WithTimeout(context.Background(), 10*time.Second)
-	client, err := mongo.Connect(context, options.Client().ApplyURI(URI_MONGODB))
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error": err}).Fatal("Failed to create the Mongo client!")
-	}
-	return client
-}
-
-// convertToInt tries to convert all strings passed to int64,
-// returning a slice of int64 on success. If any conversion fails,
-// the error is returned alongside the index of the non-integer string.
-func convertToInt(values []string) ([]int64, int, error) {
-	ints := make([]int64, len(values))
-
-	for idx, v := range values {
-		i, err := strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			return nil, idx, err
-		}
-		ints[idx] = i
-	}
-
-	return ints, -1, nil
-}
-
-// getenv gets the value associated with the environtment variable
-// passed in as `key` and returns it, if found. Otherwise, it returns
-// `defaultValue`.
-func getenv(key, defaultValue string) string {
-	if value, found := os.LookupEnv(key); found {
-		return value
-	}
-
-	return defaultValue
-}
 
 // Find logs with filter and ordered by decrescent timestamp, can limit & skip items in dataset.
-func findLogsFilter(size string, filter bson.D, skip string) ([]*Jitsilog, error) {
-	client := getClient()
+func findLogsFilter(filter bson.D, size, skip string) (types.JitsilogSlice, error) {
+	client := setup.GetMongoClient()
 	optFind := options.Find()
-	var jitsilogs []*Jitsilog
+	var jitsilogs types.JitsilogSlice
 
-	sizeAndSkip, failIdx, err := convertToInt([]string{size, skip})
+	sizeAndSkip, failIdx, err := utils.ConvertToInt([]string{size, skip})
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info(fmt.Sprintf(
@@ -261,7 +39,7 @@ func findLogsFilter(size string, filter bson.D, skip string) ([]*Jitsilog, error
 
 	log.Debug("Dataset row limit ", sizeAndSkip[0])
 	log.Debug("Dataset row skip ", sizeAndSkip[1])
-	collection := client.Database(DATABASE).Collection(COLLECTION)
+	collection := client.Database(setup.GetDatabase()).Collection(setup.GetCollection())
 	count, err := collection.CountDocuments(context.TODO(), filter)
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -288,21 +66,19 @@ func findLogsFilter(size string, filter bson.D, skip string) ([]*Jitsilog, error
 	}
 	log.Debug("Connection to MongoDB opened.")
 	for cursor.Next(context.TODO()) {
-		var jitsilog Jitsilog
+		var jitsilog types.Jitsilog
 		err = cursor.Decode(&jitsilog)
 		if err != nil {
 			log.WithFields(log.Fields{
 				"error": err}).Info("Error on decoding the document")
 			return nil, err
 		}
-		t, err := time.ParseInLocation(time.RFC3339, jitsilog.Timestamp, TIMEZONE)
+		t, err := time.Parse(time.RFC3339, jitsilog.Timestamp)
 		if err != nil {
 			log.WithFields(log.Fields{
-				"error": err}).Info("Failed to parse ISO8601")
-			jitsilog.Timestamp = "Falha no parser"
+				"error": err}).Info("Failed to parse RFC3339 on " + jitsilog.Timestamp)
 		} else {
-			jitsilog.timestamp = t.In(TIMEZONE)
-			jitsilog.Timestamp = jitsilog.timestamp.String()
+			jitsilog.SetTime(t.In(setup.GetTimezone()))
 		}
 		jitsilogs = append(jitsilogs, &jitsilog)
 	}
@@ -334,7 +110,7 @@ func checkHealth(w http.ResponseWriter, r *http.Request) {
 // Query the latest logs with a variable dataset size based on the URL.
 func latestLogsHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
-	jitsilogs, err := findLogsFilter(queryParams["size"][0], bson.D{}, queryParams["skip"][0])
+	jitsilogs, err := findLogsFilter(bson.D{}, queryParams["size"][0], queryParams["skip"][0])
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Failed to get logs!")
@@ -348,7 +124,7 @@ func searchCourseHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{}}
 	filter = append(filter, bson.E{Key: "curso", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["id"][0], Options: "gi"}}}})
-	jitsilogs, err := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
+	jitsilogs, err := findLogsFilter(filter, queryParams["size"][0], queryParams["skip"][0])
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Failed to get logs!")
@@ -362,7 +138,7 @@ func searchClassHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{}}
 	filter = append(filter, bson.E{Key: "turma", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["id"][0], Options: "gi"}}}})
-	jitsilogs, err := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
+	jitsilogs, err := findLogsFilter(filter, queryParams["size"][0], queryParams["skip"][0])
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Failed to get logs!")
@@ -376,7 +152,7 @@ func searchRoomHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{}}
 	filter = append(filter, bson.E{Key: "sala", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["id"][0], Options: "gi"}}}})
-	jitsilogs, err := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
+	jitsilogs, err := findLogsFilter(filter, queryParams["size"][0], queryParams["skip"][0])
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Failed to get logs!")
@@ -390,13 +166,17 @@ func searchStudentHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	filter := bson.D{{}}
 	filter = append(filter, bson.E{Key: "email", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["email"][0], Options: "gi"}}}})
-	jitsilogs, err := findLogsFilter(queryParams["size"][0], filter, queryParams["skip"][0])
+	jitsilogs, err := findLogsFilter(filter, queryParams["size"][0], queryParams["skip"][0])
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err}).Info("Failed to get logs!")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jitsilogs)
+}
+
+func selectLogsByTimeAndAction(time, action string, logsToWrite types.JitsilogSlice) types.JitsilogSlice {
+	return logsToWrite
 }
 
 // Query all logs earlier than a timestamp and export them as a CSV file
@@ -441,8 +221,8 @@ func searchAndExportAsCSV(w http.ResponseWriter, r *http.Request) {
 			Key: "sala", Value: bson.D{{"$regex", primitive.Regex{Pattern: sala, Options: "gi"}}}})
 	}
 
-	jitsilogs, err := findLogsFilter("0", filter, "0")
-	var logsToWrite []*Jitsilog
+	jitsilogs, err := findLogsFilter(filter, "0", "0")
+	var logsToWrite types.JitsilogSlice
 
 	// writing response
 	if err != nil {
@@ -455,54 +235,54 @@ func searchAndExportAsCSV(w http.ResponseWriter, r *http.Request) {
 		if t0s == "" && t1s == "" {
 			logsToWrite = jitsilogs
 		} else {
-			byEmail := func(jl *Jitsilog) string { return jl.Email }
-			byDate := func(jl *Jitsilog) string { return jl.timestamp.Format("2006-01-02") }
+			byEmail := func(jl *types.Jitsilog) string { return jl.Email }
+			byDate := func(jl *types.Jitsilog) string { return jl.GetTime().Format("2006-01-02") }
 
 			if t0s != "" {
 				t0, err := time.ParseDuration(t0s + "ms")
 				if err == nil {
-					loginLogs := filterByAction(iterLogs(jitsilogs), "login")
-					loginLogsByEmail := groupbyField(byEmail, loginLogs)
+					loginLogs := iterators.FilterByAction("login", iterators.IterLogs(jitsilogs))
+					loginLogsByEmail := iterators.GroupByField(byEmail, loginLogs)
 
 					for userLog := range loginLogsByEmail {
-						for dailyUserLog := range groupbyField(byDate, iterLogs(userLog.logs)) {
+						for dailyUserLog := range iterators.GroupByField(byDate, iterators.IterLogs(userLog.Logs)) {
 							logsToWrite = append(
-								logsToWrite, findClosestTimeTo(t0, iterLogs(dailyUserLog.logs)))
+								logsToWrite, utils.FindClosestTimeTo(t0, iterators.IterLogs(dailyUserLog.Logs)))
 						}
 					}
 				}
 			} else {
-				logsToWrite = chanToSlice(
-					logsToWrite, filterByAction(iterLogs(jitsilogs), "login"))
+				logsToWrite = iterators.IteratorToSlice(
+					logsToWrite, iterators.FilterByAction("login", iterators.IterLogs(jitsilogs)))
 			}
 
 			if t1s != "" {
 				t1, err := time.ParseDuration(t1s + "ms")
 				if err == nil {
-					logoutLogs := filterByAction(iterLogs(jitsilogs), "logout")
-					logoutLogsByEmail := groupbyField(byEmail, logoutLogs)
+					logoutLogs := iterators.FilterByAction("logout", iterators.IterLogs(jitsilogs))
+					logoutLogsByEmail := iterators.GroupByField(byEmail, logoutLogs)
 
 					for userLog := range logoutLogsByEmail {
-						for dailyUserLog := range groupbyField(byDate, iterLogs(userLog.logs)) {
+						for dailyUserLog := range iterators.GroupByField(byDate, iterators.IterLogs(userLog.Logs)) {
 							logsToWrite = append(
-								logsToWrite, findClosestTimeTo(t1, iterLogs(dailyUserLog.logs)))
+								logsToWrite, utils.FindClosestTimeTo(t1, iterators.IterLogs(dailyUserLog.Logs)))
 						}
 					}
 				}
 			} else {
-				logsToWrite = chanToSlice(
-					logsToWrite, filterByAction(iterLogs(jitsilogs), "logout"))
+				logsToWrite = iterators.IteratorToSlice(
+					logsToWrite, iterators.FilterByAction("logout", iterators.IterLogs(jitsilogs)))
 			}
 
 			sort.SliceStable(
 				logsToWrite, func(earlier, later int) bool {
-					return logsToWrite[later].timestamp.Before(logsToWrite[earlier].timestamp)
+					return logsToWrite[later].GetTime().Before(logsToWrite[earlier].GetTime())
 				})
 		}
 
-		csvWriter.Write(cabecalhoCSV())
+		csvWriter.Write(types.CabecalhoCSV())
 		for _, log := range logsToWrite {
-			csvWriter.Write(log.registroCSV())
+			csvWriter.Write(log.RegistroCSV())
 		}
 	}
 
@@ -526,5 +306,5 @@ func main() {
 	api.HandleFunc("/room", searchRoomHandler).Methods("GET").Queries("id", "{id}")
 	http.Handle("/", router)
 	loggedRouter := handlers.LoggingHandler(os.Stdout, router)
-	log.Fatal(http.ListenAndServe(PORT, handlers.CORS()(loggedRouter)))
+	log.Fatal(http.ListenAndServe(setup.GetPort(), handlers.CORS()(loggedRouter)))
 }
