@@ -175,7 +175,28 @@ func searchStudentHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(jitsilogs)
 }
 
-func selectLogsByTimeAndAction(time, action string, logsToWrite types.JitsilogSlice) types.JitsilogSlice {
+func selectLogsByTimeAndAction(timeMs, action string, logsToRead, logsToWrite types.JitsilogSlice) types.JitsilogSlice {
+	byEmail := func(jl *types.Jitsilog) string { return jl.Email }
+	byDate := func(jl *types.Jitsilog) string { return jl.GetTime().Format("2006-01-02") }
+
+	if timeMs != "" {
+		t, err := time.ParseDuration(timeMs + "ms")
+		if err == nil {
+			actionLogs := iterators.FilterByAction(action, iterators.IterLogs(logsToRead))
+			logsByEmail := iterators.GroupByField(byEmail, actionLogs)
+
+			for userLog := range logsByEmail {
+				for dailyUserLog := range iterators.GroupByField(byDate, iterators.IterLogs(userLog.Logs)) {
+					logsToWrite = append(
+						logsToWrite, utils.FindClosestTimeTo(t, iterators.IterLogs(dailyUserLog.Logs)))
+				}
+			}
+		}
+	} else {
+		logsToWrite = iterators.IteratorToSlice(
+			logsToWrite, iterators.FilterByAction(action, iterators.IterLogs(logsToRead)))
+	}
+
 	return logsToWrite
 }
 
@@ -235,44 +256,8 @@ func searchAndExportAsCSV(w http.ResponseWriter, r *http.Request) {
 		if t0s == "" && t1s == "" {
 			logsToWrite = jitsilogs
 		} else {
-			byEmail := func(jl *types.Jitsilog) string { return jl.Email }
-			byDate := func(jl *types.Jitsilog) string { return jl.GetTime().Format("2006-01-02") }
-
-			if t0s != "" {
-				t0, err := time.ParseDuration(t0s + "ms")
-				if err == nil {
-					loginLogs := iterators.FilterByAction("login", iterators.IterLogs(jitsilogs))
-					loginLogsByEmail := iterators.GroupByField(byEmail, loginLogs)
-
-					for userLog := range loginLogsByEmail {
-						for dailyUserLog := range iterators.GroupByField(byDate, iterators.IterLogs(userLog.Logs)) {
-							logsToWrite = append(
-								logsToWrite, utils.FindClosestTimeTo(t0, iterators.IterLogs(dailyUserLog.Logs)))
-						}
-					}
-				}
-			} else {
-				logsToWrite = iterators.IteratorToSlice(
-					logsToWrite, iterators.FilterByAction("login", iterators.IterLogs(jitsilogs)))
-			}
-
-			if t1s != "" {
-				t1, err := time.ParseDuration(t1s + "ms")
-				if err == nil {
-					logoutLogs := iterators.FilterByAction("logout", iterators.IterLogs(jitsilogs))
-					logoutLogsByEmail := iterators.GroupByField(byEmail, logoutLogs)
-
-					for userLog := range logoutLogsByEmail {
-						for dailyUserLog := range iterators.GroupByField(byDate, iterators.IterLogs(userLog.Logs)) {
-							logsToWrite = append(
-								logsToWrite, utils.FindClosestTimeTo(t1, iterators.IterLogs(dailyUserLog.Logs)))
-						}
-					}
-				}
-			} else {
-				logsToWrite = iterators.IteratorToSlice(
-					logsToWrite, iterators.FilterByAction("logout", iterators.IterLogs(jitsilogs)))
-			}
+			logsToWrite = selectLogsByTimeAndAction(t0s, "login", jitsilogs, logsToWrite)
+			logsToWrite = selectLogsByTimeAndAction(t1s, "logout", jitsilogs, logsToWrite)
 
 			sort.SliceStable(
 				logsToWrite, func(earlier, later int) bool {
