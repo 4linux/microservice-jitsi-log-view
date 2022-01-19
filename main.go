@@ -107,65 +107,24 @@ func checkHealth(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Awake and alive from %s", name)
 }
 
-// Query the latest logs with a variable dataset size based on the URL.
-func latestLogsHandler(w http.ResponseWriter, r *http.Request) {
-	queryParams := r.URL.Query()
-	jitsilogs, err := findLogsFilter(bson.D{}, queryParams["size"][0], queryParams["skip"][0])
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error": err}).Info("Failed to get logs!")
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(jitsilogs)
+type MongoQueryHandler struct {
+	Key           string
+	QueryParamKey string
 }
 
-// Query all logs that correspond with desired courseid.
-func searchCourseHandler(w http.ResponseWriter, r *http.Request) {
+// Query logs according to given keys. See `this` commit for more info.
+func (hnd MongoQueryHandler) Handler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
-	filter := bson.D{{}}
-	filter = append(filter, bson.E{Key: "curso", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["id"][0], Options: "gi"}}}})
-	jitsilogs, err := findLogsFilter(filter, queryParams["size"][0], queryParams["skip"][0])
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error": err}).Info("Failed to get logs!")
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(jitsilogs)
-}
+	filter := bson.D{}
 
-// Query all logs that correspond with desired classid
-func searchClassHandler(w http.ResponseWriter, r *http.Request) {
-	queryParams := r.URL.Query()
-	filter := bson.D{{}}
-	filter = append(filter, bson.E{Key: "turma", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["id"][0], Options: "gi"}}}})
-	jitsilogs, err := findLogsFilter(filter, queryParams["size"][0], queryParams["skip"][0])
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error": err}).Info("Failed to get logs!")
+	if hnd.Key != "" && hnd.QueryParamKey != "" {
+		filter = append(
+			filter,
+			bson.E{Key: hnd.Key, Value: bson.D{{
+				"$regex",
+				primitive.Regex{Pattern: queryParams[hnd.QueryParamKey][0], Options: "gi"},
+			}}})
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(jitsilogs)
-}
-
-// Query all logs that correspond with desired roomid
-func searchRoomHandler(w http.ResponseWriter, r *http.Request) {
-	queryParams := r.URL.Query()
-	filter := bson.D{{}}
-	filter = append(filter, bson.E{Key: "sala", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["id"][0], Options: "gi"}}}})
-	jitsilogs, err := findLogsFilter(filter, queryParams["size"][0], queryParams["skip"][0])
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error": err}).Info("Failed to get logs!")
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(jitsilogs)
-}
-
-// Query all logs that correspond with desired student email
-func searchStudentHandler(w http.ResponseWriter, r *http.Request) {
-	queryParams := r.URL.Query()
-	filter := bson.D{{}}
-	filter = append(filter, bson.E{Key: "email", Value: bson.D{{"$regex", primitive.Regex{Pattern: queryParams["email"][0], Options: "gi"}}}})
 	jitsilogs, err := findLogsFilter(filter, queryParams["size"][0], queryParams["skip"][0])
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -284,11 +243,11 @@ func main() {
 		"email", "{email}", "sala", "{sala}",
 		"t0", "{t0:(?:\\d+)?}", "t1", "{t1:(?:\\d+)?}")
 	api := version.PathPrefix("/logs").Subrouter()
-	api.HandleFunc("/last", latestLogsHandler).Methods("GET")
-	api.HandleFunc("/course", searchCourseHandler).Methods("GET").Queries("id", "{id}")
-	api.HandleFunc("/class", searchClassHandler).Methods("GET").Queries("id", "{id}")
-	api.HandleFunc("/student", searchStudentHandler).Methods("GET").Queries("email", "{email}")
-	api.HandleFunc("/room", searchRoomHandler).Methods("GET").Queries("id", "{id}")
+	api.HandleFunc("/last", MongoQueryHandler{}.Handler).Methods("GET")
+	api.HandleFunc("/course", MongoQueryHandler{"curso", "id"}.Handler).Methods("GET").Queries("id", "{id}")
+	api.HandleFunc("/class", MongoQueryHandler{"turma", "id"}.Handler).Methods("GET").Queries("id", "{id}")
+	api.HandleFunc("/student", MongoQueryHandler{"email", "email"}.Handler).Methods("GET").Queries("email", "{email}")
+	api.HandleFunc("/room", MongoQueryHandler{"sala", "id"}.Handler).Methods("GET").Queries("id", "{id}")
 	http.Handle("/", router)
 	loggedRouter := handlers.LoggingHandler(os.Stdout, router)
 	log.Fatal(http.ListenAndServe(setup.GetPort(), handlers.CORS()(loggedRouter)))
